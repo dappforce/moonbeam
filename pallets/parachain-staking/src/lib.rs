@@ -62,6 +62,7 @@ mod mock;
 mod set;
 #[cfg(test)]
 mod tests;
+mod aura_integration;
 
 use frame_support::pallet;
 pub use inflation::{InflationInfo, Range};
