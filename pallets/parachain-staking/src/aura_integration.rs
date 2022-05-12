@@ -7,6 +7,7 @@ use pallet_session::{ShouldEndSession, SessionManager};
 use sp_runtime::Permill;
 use sp_runtime::traits::Saturating;
 use sp_staking::SessionIndex;
+use sp_std::vec::Vec;
 use crate::{Config, Pallet, Round};
 
 impl<T: Config> pallet_authorship::EventHandler<T::AccountId, T::BlockNumber> for Pallet<T> {
