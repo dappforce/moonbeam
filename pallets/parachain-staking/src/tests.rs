@@ -772,7 +772,7 @@ fn cannot_join_candidates_with_more_than_available_balance() {
 				ParachainStaking::join_candidates(Origin::signed(1), 501u128, 100u32),
 				DispatchError::Module(ModuleError {
 					index: 1,
-					error: 2,
+					error: [2, 0, 0, 0],
 					message: Some("InsufficientBalance")
 				})
 			);
@@ -8429,16 +8429,10 @@ fn test_delegator_scheduled_for_revoke_is_rewarded_for_previous_rounds_but_not_f
 
 			roll_to_round_begin(4);
 			assert_eq_last_events!(
-				vec![
-					Event::<Test>::Rewarded {
-						account: 1,
-						rewards: 4,
-					},
-					Event::<Test>::Rewarded {
-						account: 2,
-						rewards: 0,
-					},
-				],
+				vec![Event::<Test>::Rewarded {
+					account: 1,
+					rewards: 4,
+				}],
 				"delegator was rewarded unexpectedly"
 			);
 			let collator_snapshot =
@@ -8496,16 +8490,10 @@ fn test_delegator_scheduled_for_revoke_is_rewarded_when_request_cancelled() {
 
 			roll_to_round_begin(4);
 			assert_eq_last_events!(
-				vec![
-					Event::<Test>::Rewarded {
-						account: 1,
-						rewards: 4,
-					},
-					Event::<Test>::Rewarded {
-						account: 2,
-						rewards: 0,
-					},
-				],
+				vec![Event::<Test>::Rewarded {
+					account: 1,
+					rewards: 4,
+				}],
 				"delegator was rewarded unexpectedly",
 			);
 			let collator_snapshot =
