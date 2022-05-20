@@ -15,7 +15,6 @@
 // along with Moonbeam.  If not, see <http://www.gnu.org/licenses/>.
 
 //! Helper methods for computing issuance based on inflation
-use std::ops::Div;
 use crate::pallet::{BalanceOf, Config, Pallet};
 use frame_support::traits::Currency;
 use parity_scale_codec::{Decode, Encode, MaxEncodedLen};
