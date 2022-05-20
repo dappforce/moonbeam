@@ -755,7 +755,7 @@ pub mod pallet {
 			let mut config = <InflationConfig<T>>::get();
 			ensure!(config.annual != schedule, Error::<T>::NoWritingSameValue);
 			config.annual = schedule;
-			config.set_round_from_annual::<T>(schedule);
+			config.set_round_from_annual(schedule, <Round<T>>::get().length);
 			Self::deposit_event(Event::InflationSet {
 				annual_min: config.annual.min,
 				annual_ideal: config.annual.ideal,

@@ -161,6 +161,8 @@ impl Default for ExtBuilder {
 			delegations: vec![],
 			collators: vec![],
 			inflation: InflationInfo {
+				blocks_per_round: MinBlocksPerRound::get(),
+				blocks_per_year: 31557600 / 12,
 				expect: Range {
 					min: 700,
 					ideal: 700,
