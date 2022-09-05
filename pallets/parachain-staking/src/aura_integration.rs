@@ -1,6 +1,5 @@
 use crate::{Config, Pallet, Round, Points, AwardedPts};
 use frame_support::dispatch::Weight;
-use frame_support::pallet_prelude;
 use frame_support::pallet_prelude::{DispatchClass, Get};
 use frame_support::traits::EstimateNextSessionRotation;
 use pallet_session::{SessionManager, ShouldEndSession};
@@ -17,7 +16,7 @@ impl<T: Config> pallet_authorship::EventHandler<T::AccountId, T::BlockNumber> fo
 		<Points<T>>::mutate(now, |x| *x = x.saturating_add(20));
 	}
 
-	fn note_uncle(author: T::AccountId, age: T::BlockNumber) {
+	fn note_uncle(_author: T::AccountId, _age: T::BlockNumber) {
 		// ignored
 	}
 }
