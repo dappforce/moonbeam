@@ -23,10 +23,7 @@ use crate::pallet::{DelegationScheduledRequests, DelegatorState, Total};
 #[allow(deprecated)]
 use crate::types::deprecated::{DelegationChange, Delegator as OldDelegator};
 use crate::types::Delegator;
-use crate::{
-	BalanceOf, Bond, BottomDelegations, CandidateInfo, CandidateMetadata, CapacityStatus,
-	CollatorCandidate, Config, Delegations, Event, Pallet, Points, Round, Staked, TopDelegations,
-};
+use crate::{BalanceOf, Bond, BottomDelegations, CandidateInfo, CandidateMetadata, CapacityStatus, CollatorCandidate, CollatorCommission, Config, Delegations, Event, InflationConfig, InflationInfo, Pallet, ParachainBondConfig, ParachainBondInfo, Points, Round, RoundInfo, Staked, TopDelegations, TotalSelected};
 #[cfg(feature = "try-runtime")]
 use frame_support::traits::OnRuntimeUpgradeHelpersExt;
 use frame_support::Twox64Concat;
@@ -43,6 +40,79 @@ use frame_support::{
 use scale_info::prelude::string::String;
 use sp_runtime::traits::{Saturating, Zero};
 use sp_std::{convert::TryInto, vec::Vec};
+
+pub struct InitStakingMigration<T>(PhantomData<T>);
+impl<T: Config> OnRuntimeUpgrade for InitStakingMigration<T> {
+	fn on_runtime_upgrade() -> Weight {
+		log::info!(target: "Staking", "init migration");
+
+		InflationConfig::<T>::put(T::InflationInfoOnMigration::get());
+
+		let endowment: BalanceOf<T> = BalanceOf::<T>::from(T::MigratedCollatorsStake::get());
+		let mut candidate_count = 0u32;
+
+		for &ref candidate in &T::CollatorsToMigrate::get() {
+			candidate_count += 1u32;
+			if let Err(error) = <Pallet<T>>::join_candidates(
+				T::Origin::from(Some(candidate.clone()).into()),
+				endowment,
+				candidate_count,
+			) {
+				log::warn!("Join candidates failed in genesis with error {:?}", error);
+			} else {
+				candidate_count += 1u32;
+			}
+		}
+		// Set collator commission to default config
+		CollatorCommission::<T>::put(T::DefaultCollatorCommission::get());
+		// Set parachain bond config to default config
+		use parity_scale_codec::Decode;
+		ParachainBondInfo::<T>::put(ParachainBondConfig {
+			// must be set soon; if not => due inflation will be sent to collators/delegators
+			account: T::AccountId::decode(&mut sp_runtime::traits::TrailingZeroInput::zeroes())
+				.expect("infinite length input; no invalid inputs for type; qed"),
+			percent: T::DefaultParachainBondReservePercent::get(),
+		});
+		// Set total selected candidates to minimum config
+		TotalSelected::<T>::put(T::MinSelectedCandidates::get());
+		// Choose top TotalSelected collator candidates
+		let (v_count, _, total_staked) = Pallet::<T>::select_top_candidates(1u32);
+		// Start Round 1 at Block 0
+		let round: RoundInfo<T::BlockNumber> =
+			RoundInfo::new(1u32, 0u32.into(), T::DefaultBlocksPerRound::get());
+		Round::<T>::put(round);
+		// Snapshot total stake
+		Staked::<T>::insert(1u32, <Total<T>>::get());
+
+		Pallet::<T>::deposit_event(Event::NewRound {
+			starting_block: T::BlockNumber::zero(),
+			round: 1u32,
+			selected_collators_number: v_count,
+			total_balance: total_staked,
+		});
+
+		let db_weight = T::DbWeight::get();
+		db_weight.reads(5) + db_weight.writes(2) + 250_000_000_000
+	}
+
+	#[cfg(feature = "try-runtime")]
+	fn pre_upgrade() -> Result<(), &'static str> {
+		log::info!(target: "Staking", "pre-init migraion");
+		let candidates = <CandidatePool<T>>::get();
+		let old_count = candidates.0.len() as u32;
+		assert_eq!(old_count, 0);
+		Ok(())
+	}
+
+	#[cfg(feature = "try-runtime")]
+	fn post_upgrade() -> Result<(), &'static str> {
+		log::info!(target: "Staking", "post-init migraion");
+		let candidates = <CandidatePool<T>>::get();
+		let new_count = candidates.0.len();
+		assert_eq!(new_count, T::ToMigrateInvulnables::get().len());
+		Ok(())
+	}
+}
 
 /// Migration to move delegator requests towards a delegation, from [DelegatorState] into
 /// [DelegationScheduledRequests] storage item.

@@ -171,6 +171,14 @@ pub mod pallet {
 		/// Minimum stake for any registered on-chain account to be a delegator
 		#[pallet::constant]
 		type MinDelegatorStk: Get<BalanceOf<Self>>;
+		/// Old collators from `pallet_session` to migrate
+		#[pallet::constant]
+		type CollatorsToMigrate: Get<Vec<Self::AccountId>>;
+		/// Init stake of collators migrated from `pallet_session`
+		#[pallet::constant]
+		type MigratedCollatorsStake: Get<BalanceOf<Self>>;
+		#[pallet::constant]
+		type InflationInfoOnMigration: Get<InflationInfo<BalanceOf<Self>>>;
 		/// Handler to notify the runtime when a collator is paid.
 		/// If you don't need it, you can specify the type `()`.
 		type OnCollatorPayout: OnCollatorPayout<Self::AccountId, BalanceOf<Self>>;
@@ -453,17 +461,17 @@ pub mod pallet {
 	#[pallet::storage]
 	#[pallet::getter(fn collator_commission)]
 	/// Commission percent taken off of rewards for all collators
-	type CollatorCommission<T: Config> = StorageValue<_, Perbill, ValueQuery>;
+	pub(crate) type CollatorCommission<T: Config> = StorageValue<_, Perbill, ValueQuery>;
 
 	#[pallet::storage]
 	#[pallet::getter(fn total_selected)]
 	/// The total candidates selected every round
-	type TotalSelected<T: Config> = StorageValue<_, u32, ValueQuery>;
+	pub(crate) type TotalSelected<T: Config> = StorageValue<_, u32, ValueQuery>;
 
 	#[pallet::storage]
 	#[pallet::getter(fn parachain_bond_info)]
 	/// Parachain bond config info { account, percent_of_inflation }
-	type ParachainBondInfo<T: Config> =
+	pub(crate) type ParachainBondInfo<T: Config> =
 		StorageValue<_, ParachainBondConfig<T::AccountId>, ValueQuery>;
 
 	#[pallet::storage]
@@ -1657,7 +1665,7 @@ pub mod pallet {
 		}
 		/// Best as in most cumulatively supported in terms of stake
 		/// Returns [collator_count, delegation_count, total staked]
-		fn select_top_candidates(now: RoundIndex) -> (u32, u32, BalanceOf<T>) {
+		pub fn select_top_candidates(now: RoundIndex) -> (u32, u32, BalanceOf<T>) {
 			let (mut collator_count, mut delegation_count, mut total) =
 				(0u32, 0u32, BalanceOf::<T>::zero());
 			// choose the top TotalSelected qualified candidates, ordered by stake
