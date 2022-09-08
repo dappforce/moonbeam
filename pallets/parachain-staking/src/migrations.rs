@@ -44,7 +44,7 @@ use sp_std::{convert::TryInto, vec::Vec};
 pub struct InitStakingMigration<T>(PhantomData<T>);
 impl<T: Config> OnRuntimeUpgrade for InitStakingMigration<T> {
 	fn on_runtime_upgrade() -> Weight {
-		log::info!(target: "Staking", "init migration");
+		log::info!(target: "Staking", "Parachain staking init migration");
 
 		InflationConfig::<T>::put(T::InflationInfoOnMigration::get());
 
@@ -77,22 +77,24 @@ impl<T: Config> OnRuntimeUpgrade for InitStakingMigration<T> {
 		TotalSelected::<T>::put(T::MinSelectedCandidates::get());
 		// Choose top TotalSelected collator candidates
 		let (v_count, _, total_staked) = Pallet::<T>::select_top_candidates(1u32);
-		// Start Round 1 at Block 0
+		// Start Round 1 at current block
+		let current_block = frame_system::Pallet::<T>::block_number();
 		let round: RoundInfo<T::BlockNumber> =
-			RoundInfo::new(1u32, 0u32.into(), T::DefaultBlocksPerRound::get());
+			RoundInfo::new(1u32, current_block, T::DefaultBlocksPerRound::get());
 		Round::<T>::put(round);
 		// Snapshot total stake
 		Staked::<T>::insert(1u32, <Total<T>>::get());
 
 		Pallet::<T>::deposit_event(Event::NewRound {
-			starting_block: T::BlockNumber::zero(),
+			starting_block: current_block,
 			round: 1u32,
 			selected_collators_number: v_count,
 			total_balance: total_staked,
 		});
 
 		let db_weight = T::DbWeight::get();
-		db_weight.reads(5) + db_weight.writes(2) + 250_000_000_000
+		use crate::weights::WeightInfo;
+		db_weight.reads(1) + db_weight.writes(6) + <T as Config>::WeightInfo::join_candidates(candidate_count)
 	}
 
 	#[cfg(feature = "try-runtime")]
