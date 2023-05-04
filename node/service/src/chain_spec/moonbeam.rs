@@ -26,18 +26,19 @@ use cumulus_primitives_core::ParaId;
 use hex_literal::hex;
 use moonbase_runtime::EligibilityValue;
 use moonbeam_runtime::{
-	currency::GLMR, currency::SUPPLY_FACTOR, get, AccountId, AuthorFilterConfig,
-	AuthorMappingConfig, Balance, BalancesConfig, CouncilCollectiveConfig, CrowdloanRewardsConfig,
-	DemocracyConfig, EVMConfig, EthereumChainIdConfig, EthereumConfig, GenesisAccount,
-	GenesisConfig, InflationInfo, MaintenanceModeConfig, ParachainInfoConfig,
-	ParachainStakingConfig, PolkadotXcmConfig, Precompiles, Range, SystemConfig,
-	TechCommitteeCollectiveConfig, WASM_BINARY,
+	currency::GLMR, currency::SUPPLY_FACTOR, AccountId, AuthorFilterConfig, AuthorMappingConfig,
+	Balance, BalancesConfig, CouncilCollectiveConfig, CrowdloanRewardsConfig, DemocracyConfig,
+	EVMConfig, EthereumChainIdConfig, EthereumConfig, GenesisAccount, GenesisConfig, InflationInfo,
+	MaintenanceModeConfig, ParachainInfoConfig, ParachainStakingConfig, PolkadotXcmConfig,
+	Precompiles, Range, SystemConfig, TechCommitteeCollectiveConfig, TransactionPaymentConfig,
+	TreasuryCouncilCollectiveConfig, HOURS, WASM_BINARY,
 };
 use nimbus_primitives::NimbusId;
+use pallet_transaction_payment::Multiplier;
 use sc_service::ChainType;
 #[cfg(test)]
 use sp_core::ecdsa;
-use sp_runtime::Perbill;
+use sp_runtime::{Perbill, Percent};
 
 /// Specialized `ChainSpec`. This is a specialization of the general Substrate ChainSpec type.
 pub type ChainSpec = sc_service::GenericChainSpec<GenesisConfig, Extensions>;
@@ -63,11 +64,13 @@ pub fn development_chain_spec(mnemonic: Option<String>, num_accounts: Option<u32
 				vec![accounts[1], accounts[2], accounts[3]],
 				// Tech comitee members: Alith and Baltathar
 				vec![accounts[0], accounts[1]],
+				// Treasury Council members: Baltathar, Charleth and Dorothy
+				vec![accounts[1], accounts[2], accounts[3]],
 				// Collator Candidate: Alice -> Alith
 				vec![(
 					accounts[0],
 					get_from_seed::<NimbusId>("Alice"),
-					1_000 * GLMR * SUPPLY_FACTOR,
+					20_000 * GLMR * SUPPLY_FACTOR,
 				)],
 				// Delegations
 				vec![],
@@ -112,14 +115,22 @@ pub fn get_chain_spec(para_id: ParaId) -> ChainSpec {
 		ChainType::Local,
 		move || {
 			testnet_genesis(
+				// Council members: Baltathar, Charleth and Dorothy
 				vec![
 					AccountId::from(hex!("3Cd0A705a2DC65e5b1E1205896BaA2be8A07c6e0")),
 					AccountId::from(hex!("798d4Ba9baf0064Ec19eB4F0a1a45785ae9D6DFc")),
 					AccountId::from(hex!("773539d4Ac0e786233D90A233654ccEE26a613D9")),
 				],
+				// Tech comitee members: Alith and Baltathar
 				vec![
 					AccountId::from(hex!("f24FF3a9CF04c71Dbc94D0b566f7A27B94566cac")),
 					AccountId::from(hex!("3Cd0A705a2DC65e5b1E1205896BaA2be8A07c6e0")),
+				],
+				// Treasury Council members: Baltathar, Charleth and Dorothy
+				vec![
+					AccountId::from(hex!("3Cd0A705a2DC65e5b1E1205896BaA2be8A07c6e0")),
+					AccountId::from(hex!("798d4Ba9baf0064Ec19eB4F0a1a45785ae9D6DFc")),
+					AccountId::from(hex!("773539d4Ac0e786233D90A233654ccEE26a613D9")),
 				],
 				// Collator Candidates
 				vec![
@@ -127,20 +138,23 @@ pub fn get_chain_spec(para_id: ParaId) -> ChainSpec {
 					(
 						AccountId::from(hex!("f24FF3a9CF04c71Dbc94D0b566f7A27B94566cac")),
 						get_from_seed::<NimbusId>("Alice"),
-						1_000 * GLMR * SUPPLY_FACTOR,
+						20_000 * GLMR * SUPPLY_FACTOR,
 					),
-					// Bob -> Baltithar
+					// Bob -> Baltathar
 					(
 						AccountId::from(hex!("3Cd0A705a2DC65e5b1E1205896BaA2be8A07c6e0")),
 						get_from_seed::<NimbusId>("Bob"),
-						1_000 * GLMR * SUPPLY_FACTOR,
+						20_000 * GLMR * SUPPLY_FACTOR,
 					),
 				],
 				// Delegations
 				vec![],
+				// Endowed: Alith, Baltathar, Charleth and Dorothy
 				vec![
 					AccountId::from(hex!("f24FF3a9CF04c71Dbc94D0b566f7A27B94566cac")),
 					AccountId::from(hex!("3Cd0A705a2DC65e5b1E1205896BaA2be8A07c6e0")),
+					AccountId::from(hex!("798d4Ba9baf0064Ec19eB4F0a1a45785ae9D6DFc")),
+					AccountId::from(hex!("773539d4Ac0e786233D90A233654ccEE26a613D9")),
 				],
 				1_500_000 * GLMR * SUPPLY_FACTOR,
 				para_id,
@@ -170,13 +184,19 @@ pub fn get_chain_spec(para_id: ParaId) -> ChainSpec {
 	)
 }
 
+const COLLATOR_COMMISSION: Perbill = Perbill::from_percent(20);
+const PARACHAIN_BOND_RESERVE_PERCENT: Percent = Percent::from_percent(30);
+const BLOCKS_PER_ROUND: u32 = 6 * HOURS;
+const NUM_SELECTED_CANDIDATES: u32 = 8;
 pub fn moonbeam_inflation_config() -> InflationInfo<Balance> {
 	fn to_round_inflation(annual: Range<Perbill>) -> Range<Perbill> {
-		use parachain_staking::inflation::{perbill_annual_to_perbill_round, BLOCKS_PER_YEAR};
+		use pallet_parachain_staking::inflation::{
+			perbill_annual_to_perbill_round, BLOCKS_PER_YEAR,
+		};
 		perbill_annual_to_perbill_round(
 			annual,
 			// rounds per year
-			BLOCKS_PER_YEAR / get!(parachain_staking, DefaultBlocksPerRound, u32),
+			BLOCKS_PER_YEAR / BLOCKS_PER_ROUND,
 		)
 	}
 	let annual = Range {
@@ -200,8 +220,9 @@ pub fn moonbeam_inflation_config() -> InflationInfo<Balance> {
 pub fn testnet_genesis(
 	council_members: Vec<AccountId>,
 	tech_comittee_members: Vec<AccountId>,
+	treasury_council_members: Vec<AccountId>,
 	candidates: Vec<(AccountId, NimbusId, Balance)>,
-	delegations: Vec<(AccountId, AccountId, Balance)>,
+	delegations: Vec<(AccountId, AccountId, Balance, Percent)>,
 	endowed_accounts: Vec<AccountId>,
 	crowdloan_fund_pot: Balance,
 	para_id: ParaId,
@@ -223,7 +244,7 @@ pub fn testnet_genesis(
 			balances: endowed_accounts
 				.iter()
 				.cloned()
-				.map(|k| (k, 1 << 80))
+				.map(|k| (k, 1 << 110))
 				.collect(),
 		},
 		crowdloan_rewards: CrowdloanRewardsConfig {
@@ -251,7 +272,6 @@ pub fn testnet_genesis(
 				.collect(),
 		},
 		ethereum: EthereumConfig {},
-		base_fee: Default::default(),
 		democracy: DemocracyConfig::default(),
 		parachain_staking: ParachainStakingConfig {
 			candidates: candidates
@@ -261,6 +281,10 @@ pub fn testnet_genesis(
 				.collect(),
 			delegations,
 			inflation_config: moonbeam_inflation_config(),
+			collator_commission: COLLATOR_COMMISSION,
+			parachain_bond_reserve_percent: PARACHAIN_BOND_RESERVE_PERCENT,
+			blocks_per_round: BLOCKS_PER_ROUND,
+			num_selected_candidates: NUM_SELECTED_CANDIDATES,
 		},
 		council_collective: CouncilCollectiveConfig {
 			phantom: Default::default(),
@@ -269,6 +293,10 @@ pub fn testnet_genesis(
 		tech_committee_collective: TechCommitteeCollectiveConfig {
 			phantom: Default::default(),
 			members: tech_comittee_members,
+		},
+		treasury_council_collective: TreasuryCouncilCollectiveConfig {
+			phantom: Default::default(),
+			members: treasury_council_members,
 		},
 		author_filter: AuthorFilterConfig {
 			eligible_count: EligibilityValue::new_unchecked(50),
@@ -288,6 +316,9 @@ pub fn testnet_genesis(
 		},
 		// This should initialize it to whatever we have set in the pallet
 		polkadot_xcm: PolkadotXcmConfig::default(),
+		transaction_payment: TransactionPaymentConfig {
+			multiplier: Multiplier::from(8u128),
+		},
 	}
 }
 

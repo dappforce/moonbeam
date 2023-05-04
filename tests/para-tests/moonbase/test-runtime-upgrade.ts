@@ -1,54 +1,15 @@
-import { Keyring } from "@polkadot/api";
 import { expect } from "chai";
-import child_process from "child_process";
-
-import { ALITH_PRIV_KEY } from "../../util/constants";
-import { describeParachain } from "../../util/setup-para-tests";
+import { describeParachain, retrieveParaVersions } from "../../util/setup-para-tests";
 
 // This test will run on local until the new runtime is available
-
-const localVersion = child_process
-  .execSync(`grep 'spec_version: [0-9]*' ../runtime/moonbase/src/lib.rs | grep -o '[0-9]*'`)
-  .toString()
-  .trim();
-
-let alreadyReleased = "";
-try {
-  alreadyReleased = child_process
-    .execSync(
-      `git tag -l -n 'runtime-[0-9]*' | cut -d' ' -f 1 | cut -d'-' -f 2 | grep "${localVersion}"`
-    )
-    .toString()
-    .trim();
-} catch (e) {
-  alreadyReleased = "";
-}
-
-let baseRuntime: string;
-if (localVersion == alreadyReleased) {
-  console.log(`${localVersion} already released. Skipping current runtime `);
-  baseRuntime = localVersion;
-} else {
-  // Retrieves previous version
-  baseRuntime = child_process
-    .execSync(
-      `git tag -l -n 'runtime-[0-9]*' | cut -d' ' -f 1 | cut -d'-' -f 2 ` +
-        `| sed '1 i ${localVersion}' | sort -n -r ` +
-        `| uniq | grep -A1 "${localVersion}" | tail -1`
-    )
-    .toString()
-    .trim();
-}
-
-console.log(`Using base runtime ${baseRuntime}`);
-
 const RUNTIME_VERSION = "local";
+const { localVersion, previousVersion, hasAuthoringChanges } = retrieveParaVersions();
 describeParachain(
   `Runtime upgrade ${RUNTIME_VERSION}`,
   {
     parachain: {
       chain: "moonbase-local",
-      runtime: `runtime-${baseRuntime}`,
+      runtime: `runtime-${previousVersion}`,
       binary: "local",
     },
     relaychain: {
@@ -56,19 +17,17 @@ describeParachain(
     },
   },
   (context) => {
-    if (localVersion !== alreadyReleased) {
+    if (localVersion !== previousVersion && !hasAuthoringChanges) {
       it("should not fail", async function () {
         // Expected to take 10 blocks for upgrade + 4 blocks to check =>
         // ~200000 + init 60000 + error marging 140000
         this.timeout(400000);
-        const keyring = new Keyring({ type: "ethereum" });
-        const alith = await keyring.addFromUri(ALITH_PRIV_KEY, null, "ethereum");
 
         const currentVersion = await (
           (await context.polkadotApiParaone.query.system.lastRuntimeUpgrade()) as any
         ).unwrap();
         expect(currentVersion.toJSON()).to.deep.equal({
-          specVersion: Number(baseRuntime),
+          specVersion: Number(previousVersion),
           specName: "moonbase",
         });
         console.log(
@@ -76,7 +35,7 @@ describeParachain(
             `${currentVersion.specVersion.toString()}`
         );
 
-        await context.upgradeRuntime(alith, "moonbase", RUNTIME_VERSION);
+        await context.upgradeRuntime({ runtimeName: "moonbase", runtimeTag: RUNTIME_VERSION });
 
         process.stdout.write(`Checking on-chain runtime version ${localVersion}...`);
         expect(

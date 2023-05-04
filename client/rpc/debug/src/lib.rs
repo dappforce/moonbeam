@@ -13,9 +13,9 @@
 
 // You should have received a copy of the GNU General Public License
 // along with Moonbeam.  If not, see <http://www.gnu.org/licenses/>.
-use futures::{future::BoxFuture, FutureExt, SinkExt, StreamExt};
-use jsonrpc_core::Result as RpcResult;
-pub use moonbeam_rpc_core_debug::{Debug as DebugT, DebugServer, TraceParams};
+use futures::{SinkExt, StreamExt};
+use jsonrpsee::core::{async_trait, RpcResult};
+pub use moonbeam_rpc_core_debug::{DebugServer, TraceParams};
 
 use tokio::{
 	self,
@@ -62,73 +62,64 @@ impl Debug {
 	}
 }
 
-impl DebugT for Debug {
+#[async_trait]
+impl DebugServer for Debug {
 	/// Handler for `debug_traceTransaction` request. Communicates with the service-defined task
 	/// using channels.
-	fn trace_transaction(
+	async fn trace_transaction(
 		&self,
 		transaction_hash: H256,
 		params: Option<TraceParams>,
-	) -> BoxFuture<'static, RpcResult<single::TransactionTrace>> {
+	) -> RpcResult<single::TransactionTrace> {
 		let mut requester = self.requester.clone();
 
-		async move {
-			let (tx, rx) = oneshot::channel();
-			// Send a message from the rpc handler to the service level task.
-			requester
-				.send(((RequesterInput::Transaction(transaction_hash), params), tx))
-				.await
-				.map_err(|err| {
-					internal_err(format!(
-						"failed to send request to debug service : {:?}",
-						err
-					))
-				})?;
+		let (tx, rx) = oneshot::channel();
+		// Send a message from the rpc handler to the service level task.
+		requester
+			.send(((RequesterInput::Transaction(transaction_hash), params), tx))
+			.await
+			.map_err(|err| {
+				internal_err(format!(
+					"failed to send request to debug service : {:?}",
+					err
+				))
+			})?;
 
-			// Receive a message from the service level task and send the rpc response.
-			rx.await
-				.map_err(|err| {
-					internal_err(format!("debug service dropped the channel : {:?}", err))
-				})?
-				.map(|res| match res {
-					Response::Single(res) => res,
-					_ => unreachable!(),
-				})
-		}
-		.boxed()
+		// Receive a message from the service level task and send the rpc response.
+		rx.await
+			.map_err(|err| internal_err(format!("debug service dropped the channel : {:?}", err)))?
+			.map(|res| match res {
+				Response::Single(res) => res,
+				_ => unreachable!(),
+			})
 	}
 
-	fn trace_block(
+	async fn trace_block(
 		&self,
 		id: RequestBlockId,
 		params: Option<TraceParams>,
-	) -> BoxFuture<'static, RpcResult<Vec<single::TransactionTrace>>> {
+	) -> RpcResult<Vec<single::TransactionTrace>> {
 		let mut requester = self.requester.clone();
 
-		async move {
-			let (tx, rx) = oneshot::channel();
-			// Send a message from the rpc handler to the service level task.
-			requester
-				.send(((RequesterInput::Block(id), params), tx))
-				.await
-				.map_err(|err| {
-					internal_err(format!(
-						"failed to send request to debug service : {:?}",
-						err
-					))
-				})?;
+		let (tx, rx) = oneshot::channel();
+		// Send a message from the rpc handler to the service level task.
+		requester
+			.send(((RequesterInput::Block(id), params), tx))
+			.await
+			.map_err(|err| {
+				internal_err(format!(
+					"failed to send request to debug service : {:?}",
+					err
+				))
+			})?;
 
-			// Receive a message from the service level task and send the rpc response.
-			rx.await
-				.map_err(|err| {
-					internal_err(format!("debug service dropped the channel : {:?}", err))
-				})?
-				.map(|res| match res {
-					Response::Block(res) => res,
-					_ => unreachable!(),
-				})
-		}
-		.boxed()
+		// Receive a message from the service level task and send the rpc response.
+		rx.await
+			.map_err(|err| internal_err(format!("debug service dropped the channel : {:?}", err)))?
+			.map(|res| match res {
+				Response::Block(res) => res,
+				_ => unreachable!(),
+			})
 	}
 }
 
@@ -156,9 +147,10 @@ where
 		frontier_backend: Arc<fc_db::Backend<B>>,
 		permit_pool: Arc<Semaphore>,
 		overrides: Arc<OverrideHandle<B>>,
+		raw_max_memory_usage: usize,
 	) -> (impl Future<Output = ()>, DebugRequester) {
 		let (tx, mut rx): (DebugRequester, _) =
-			sc_utils::mpsc::tracing_unbounded("debug-requester");
+			sc_utils::mpsc::tracing_unbounded("debug-requester", 100_000);
 
 		let fut = async move {
 			loop {
@@ -185,6 +177,7 @@ where
 											transaction_hash,
 											params,
 											overrides.clone(),
+											raw_max_memory_usage,
 										)
 									})
 									.await
@@ -310,8 +303,12 @@ where
 				Err(internal_err("'pending' blocks are not supported"))
 			}
 			RequestBlockId::Hash(eth_hash) => {
-				match frontier_backend_client::load_hash::<B>(frontier_backend.as_ref(), eth_hash) {
-					Ok(Some(id)) => Ok(id),
+				match frontier_backend_client::load_hash::<B, C>(
+					client.as_ref(),
+					frontier_backend.as_ref(),
+					eth_hash,
+				) {
+					Ok(Some(hash)) => Ok(BlockId::Hash(hash)),
 					Ok(_) => Err(internal_err("Block hash not found".to_string())),
 					Err(e) => Err(e),
 				}
@@ -323,7 +320,10 @@ where
 		// Get Blockchain backend
 		let blockchain = backend.blockchain();
 		// Get the header I want to work with.
-		let header = match client.header(reference_id) {
+		let Ok(hash) = client.expect_block_hash_from_id(&reference_id) else {
+			return Err(internal_err("Block header not found"))
+		};
+		let header = match client.header(hash) {
 			Ok(Some(h)) => h,
 			_ => return Err(internal_err("Block header not found")),
 		};
@@ -331,16 +331,13 @@ where
 		// Get parent blockid.
 		let parent_block_id = BlockId::Hash(*header.parent_hash());
 
-		let schema = frontier_backend_client::onchain_storage_schema::<B, C, BE>(
-			client.as_ref(),
-			reference_id,
-		);
+		let schema = fc_storage::onchain_storage_schema::<B, C, BE>(client.as_ref(), hash);
 
 		// Using storage overrides we align with `:ethereum_schema` which will result in proper
 		// SCALE decoding in case of migration.
 		let statuses = match overrides.schemas.get(&schema) {
 			Some(schema) => schema
-				.current_transaction_statuses(&reference_id)
+				.current_transaction_statuses(hash)
 				.unwrap_or_default(),
 			_ => {
 				return Err(internal_err(format!(
@@ -360,7 +357,7 @@ where
 
 		// Get block extrinsics.
 		let exts = blockchain
-			.body(reference_id)
+			.body(hash)
 			.map_err(|e| internal_err(format!("Fail to read blockchain db: {:?}", e)))?
 			.unwrap_or_default();
 
@@ -426,6 +423,7 @@ where
 		transaction_hash: H256,
 		params: Option<TraceParams>,
 		overrides: Arc<OverrideHandle<B>>,
+		raw_max_memory_usage: usize,
 	) -> RpcResult<Response> {
 		let (tracer_input, trace_type) = Self::handle_params(params)?;
 
@@ -440,18 +438,24 @@ where
 			Err(e) => return Err(e),
 		};
 
-		let reference_id =
-			match frontier_backend_client::load_hash::<B>(frontier_backend.as_ref(), hash) {
-				Ok(Some(hash)) => hash,
-				Ok(_) => return Err(internal_err("Block hash not found".to_string())),
-				Err(e) => return Err(e),
-			};
+		let reference_id = match frontier_backend_client::load_hash::<B, C>(
+			client.as_ref(),
+			frontier_backend.as_ref(),
+			hash,
+		) {
+			Ok(Some(hash)) => BlockId::Hash(hash),
+			Ok(_) => return Err(internal_err("Block hash not found".to_string())),
+			Err(e) => return Err(e),
+		};
 		// Get ApiRef. This handle allow to keep changes between txs in an internal buffer.
 		let api = client.runtime_api();
 		// Get Blockchain backend
 		let blockchain = backend.blockchain();
 		// Get the header I want to work with.
-		let header = match client.header(reference_id) {
+		let Ok(reference_hash) = client.expect_block_hash_from_id(&reference_id) else {
+			return Err(internal_err("Block header not found"))
+		};
+		let header = match client.header(reference_hash) {
 			Ok(Some(h)) => h,
 			_ => return Err(internal_err("Block header not found")),
 		};
@@ -460,7 +464,7 @@ where
 
 		// Get block extrinsics.
 		let exts = blockchain
-			.body(reference_id)
+			.body(reference_hash)
 			.map_err(|e| internal_err(format!("Fail to read blockchain db: {:?}", e)))?
 			.unwrap_or_default();
 
@@ -475,19 +479,17 @@ where
 			));
 		};
 
-		let schema = frontier_backend_client::onchain_storage_schema::<B, C, BE>(
-			client.as_ref(),
-			reference_id,
-		);
+		let schema =
+			fc_storage::onchain_storage_schema::<B, C, BE>(client.as_ref(), reference_hash);
 
 		// Get the block that contains the requested transaction. Using storage overrides we align
 		// with `:ethereum_schema` which will result in proper SCALE decoding in case of migration.
 		let reference_block = match overrides.schemas.get(&schema) {
-			Some(schema) => schema.current_block(&reference_id),
+			Some(schema) => schema.current_block(reference_hash),
 			_ => {
 				return Err(internal_err(format!(
 					"No storage override at {:?}",
-					reference_id
+					reference_hash
 				)))
 			}
 		};
@@ -547,11 +549,16 @@ where
 							disable_storage,
 							disable_memory,
 							disable_stack,
+							raw_max_memory_usage,
 						);
 						proxy.using(f)?;
 						Ok(Response::Single(
-							moonbeam_client_evm_tracing::formatters::Raw::format(proxy)
-								.ok_or(internal_err("Fail to format proxy"))?,
+							moonbeam_client_evm_tracing::formatters::Raw::format(proxy).ok_or(
+								internal_err(
+									"replayed transaction generated too much data. \
+								try disabling memory or storage?",
+								),
+							)?,
 						))
 					}
 					single::TraceType::CallList => {

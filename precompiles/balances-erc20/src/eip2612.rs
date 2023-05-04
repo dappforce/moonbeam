@@ -1,5 +1,5 @@
 // Copyright 2019-2022 PureStake Inc.
-// This file is 	part of Moonbeam.
+// This file is part of Moonbeam.
 
 // Moonbeam is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -37,26 +37,24 @@ where
 	Metadata: Erc20Metadata,
 	Instance: InstanceToPrefix + 'static,
 	Runtime: pallet_balances::Config<Instance> + pallet_evm::Config + pallet_timestamp::Config,
-	Runtime::Call: Dispatchable<PostInfo = PostDispatchInfo> + GetDispatchInfo,
-	Runtime::Call: From<pallet_balances::Call<Runtime, Instance>>,
-	<Runtime::Call as Dispatchable>::Origin: From<Option<Runtime::AccountId>>,
+	Runtime::RuntimeCall: Dispatchable<PostInfo = PostDispatchInfo> + GetDispatchInfo,
+	Runtime::RuntimeCall: From<pallet_balances::Call<Runtime, Instance>>,
+	<Runtime::RuntimeCall as Dispatchable>::RuntimeOrigin: From<Option<Runtime::AccountId>>,
 	BalanceOf<Runtime, Instance>: TryFrom<U256> + Into<U256>,
 	<Runtime as pallet_timestamp::Config>::Moment: Into<U256>,
 {
-	fn compute_domain_separator(address: H160) -> [u8; 32] {
+	pub fn compute_domain_separator(address: H160) -> [u8; 32] {
 		let name: H256 = keccak_256(Metadata::name().as_bytes()).into();
-
 		let version: H256 = keccak256!("1").into();
-
 		let chain_id: U256 = Runtime::ChainId::get().into();
 
-		let domain_separator_inner = EvmDataWriter::new()
-			.write(H256::from(PERMIT_DOMAIN))
-			.write(name)
-			.write(version)
-			.write(chain_id)
-			.write(Address(address))
-			.build();
+		let domain_separator_inner = solidity::encode_arguments((
+			H256::from(PERMIT_DOMAIN),
+			name,
+			version,
+			chain_id,
+			Address(address),
+		));
 
 		keccak_256(&domain_separator_inner).into()
 	}
@@ -71,14 +69,14 @@ where
 	) -> [u8; 32] {
 		let domain_separator = Self::compute_domain_separator(address);
 
-		let permit_content = EvmDataWriter::new()
-			.write(H256::from(PERMIT_TYPEHASH))
-			.write(Address(owner))
-			.write(Address(spender))
-			.write(value)
-			.write(nonce)
-			.write(deadline)
-			.build();
+		let permit_content = solidity::encode_arguments((
+			H256::from(PERMIT_TYPEHASH),
+			Address(owner),
+			Address(spender),
+			value,
+			nonce,
+			deadline,
+		));
 		let permit_content = keccak_256(&permit_content);
 
 		let mut pre_digest = Vec::with_capacity(2 + 32 + 32);
@@ -91,28 +89,35 @@ where
 	// Translated from
 	// https://github.com/Uniswap/v2-core/blob/master/contracts/UniswapV2ERC20.sol#L81
 	pub(crate) fn permit(
-		input: &mut EvmDataReader,
-		gasometer: &mut Gasometer,
-		context: &Context,
-	) -> EvmResult<PrecompileOutput> {
-		gasometer.record_cost(RuntimeHelper::<Runtime>::db_read_gas_cost())?;
+		handle: &mut impl PrecompileHandle,
+		owner: Address,
+		spender: Address,
+		value: U256,
+		deadline: U256,
+		v: u8,
+		r: H256,
+		s: H256,
+	) -> EvmResult {
+		handle.record_cost(RuntimeHelper::<Runtime>::db_read_gas_cost())?;
 
-		let owner: H160 = input.read::<Address>(gasometer)?.into();
-		let spender: H160 = input.read::<Address>(gasometer)?.into();
-		let value: U256 = input.read(gasometer)?;
-		let deadline: U256 = input.read(gasometer)?;
-		let v: u8 = input.read(gasometer)?;
-		let r: H256 = input.read(gasometer)?;
-		let s: H256 = input.read(gasometer)?;
+		let owner: H160 = owner.into();
+		let spender: H160 = spender.into();
 
 		// pallet_timestamp is in ms while Ethereum use second timestamps.
 		let timestamp: U256 = (pallet_timestamp::Pallet::<Runtime>::get()).into() / 1000;
 
-		ensure!(deadline >= timestamp, gasometer.revert("permit expired"));
+		ensure!(deadline >= timestamp, revert("Permit expired"));
 
 		let nonce = NoncesStorage::<Instance>::get(owner);
 
-		let permit = Self::generate_permit(context.address, owner, spender, value, nonce, deadline);
+		let permit = Self::generate_permit(
+			handle.context().address,
+			owner,
+			spender,
+			value,
+			nonce,
+			deadline,
+		);
 
 		let mut sig = [0u8; 65];
 		sig[0..32].copy_from_slice(&r.as_bytes());
@@ -120,74 +125,49 @@ where
 		sig[64] = v;
 
 		let signer = sp_io::crypto::secp256k1_ecdsa_recover(&sig, &permit)
-			.map_err(|_| gasometer.revert("invalid permit"))?;
+			.map_err(|_| revert("Invalid permit"))?;
 		let signer = H160::from(H256::from_slice(keccak_256(&signer).as_slice()));
 
 		ensure!(
 			signer != H160::zero() && signer == owner,
-			gasometer.revert("invalid permit")
+			revert("Invalid permit")
 		);
 
 		NoncesStorage::<Instance>::insert(owner, nonce + U256::one());
 
 		{
-			let amount = Erc20BalancesPrecompile::<Runtime, Metadata, Instance>::u256_to_amount(
-				&mut gasometer.clone(),
-				value,
-			)
-			.unwrap_or_else(|_| Bounded::max_value());
+			let amount =
+				Erc20BalancesPrecompile::<Runtime, Metadata, Instance>::u256_to_amount(value)
+					.unwrap_or_else(|_| Bounded::max_value());
 
 			let owner: Runtime::AccountId = Runtime::AddressMapping::into_account_id(owner);
 			let spender: Runtime::AccountId = Runtime::AddressMapping::into_account_id(spender);
 			ApprovesStorage::<Runtime, Instance>::insert(owner, spender, amount);
 		}
 
-		Ok(PrecompileOutput {
-			exit_status: ExitSucceed::Returned,
-			cost: gasometer.used_gas(),
-			output: vec![],
-			logs: LogsBuilder::new(context.address)
-				.log3(
-					SELECTOR_LOG_APPROVAL,
-					owner,
-					spender,
-					EvmDataWriter::new().write(value).build(),
-				)
-				.build(),
-		})
+		log3(
+			handle.context().address,
+			SELECTOR_LOG_APPROVAL,
+			owner,
+			spender,
+			solidity::encode_event_data(value),
+		)
+		.record(handle)?;
+
+		Ok(())
 	}
 
-	pub(crate) fn nonces(
-		input: &mut EvmDataReader,
-		gasometer: &mut Gasometer,
-	) -> EvmResult<PrecompileOutput> {
-		gasometer.record_cost(RuntimeHelper::<Runtime>::db_read_gas_cost())?;
+	pub(crate) fn nonces(handle: &mut impl PrecompileHandle, owner: Address) -> EvmResult<U256> {
+		handle.record_cost(RuntimeHelper::<Runtime>::db_read_gas_cost())?;
 
-		let owner: H160 = input.read::<Address>(gasometer)?.into();
+		let owner: H160 = owner.into();
 
-		let nonce = NoncesStorage::<Instance>::get(owner);
-
-		Ok(PrecompileOutput {
-			exit_status: ExitSucceed::Returned,
-			cost: gasometer.used_gas(),
-			output: EvmDataWriter::new().write(nonce).build(),
-			logs: vec![],
-		})
+		Ok(NoncesStorage::<Instance>::get(owner))
 	}
 
-	pub(crate) fn domain_separator(
-		gasometer: &mut Gasometer,
-		context: &Context,
-	) -> EvmResult<PrecompileOutput> {
-		gasometer.record_cost(RuntimeHelper::<Runtime>::db_read_gas_cost())?;
+	pub(crate) fn domain_separator(handle: &mut impl PrecompileHandle) -> EvmResult<H256> {
+		handle.record_cost(RuntimeHelper::<Runtime>::db_read_gas_cost())?;
 
-		let domain_separator: H256 = Self::compute_domain_separator(context.address).into();
-
-		Ok(PrecompileOutput {
-			exit_status: ExitSucceed::Returned,
-			cost: gasometer.used_gas(),
-			output: EvmDataWriter::new().write(domain_separator).build(),
-			logs: vec![],
-		})
+		Ok(Self::compute_domain_separator(handle.context().address).into())
 	}
 }

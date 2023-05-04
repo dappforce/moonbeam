@@ -1,29 +1,41 @@
+import "@moonbeam-network/api-augment";
+
 import { expect } from "chai";
-import { describeDevMoonbeamAllEthTxTypes } from "../../util/setup-dev-tests";
 import { ethers } from "ethers";
-import { getCompiled } from "../../util/contracts";
-import { createContract, createTransaction } from "../../util/transactions";
-import { customWeb3Request } from "../../util/providers";
 
-import { GAS_PRICE, GENESIS_ACCOUNT, GENESIS_ACCOUNT_PRIVATE_KEY } from "../../util/constants";
+import { alith } from "../../util/accounts";
 import { verifyLatestBlockFees } from "../../util/block";
+import {
+  MIN_GAS_PRICE,
+  PRECOMPILE_NATIVE_ERC20_ADDRESS,
+  PRECOMPILE_XTOKENS_ADDRESS,
+} from "../../util/constants";
+import { getCompiled } from "../../util/contracts";
+import {
+  describeDevMoonbeam,
+  describeDevMoonbeamAllEthTxTypes,
+  DevTestContext,
+} from "../../util/setup-dev-tests";
+import {
+  ALITH_TRANSACTION_TEMPLATE,
+  createContract,
+  createTransaction,
+  DEFAULT_TXN_MAX_BASE_FEE,
+} from "../../util/transactions";
 
-const ADDRESS_XTOKENS = "0x0000000000000000000000000000000000000804";
-export const BALANCES_ADDRESS = "0x0000000000000000000000000000000000000802";
+const XTOKENS_CONTRACT = getCompiled("XtokensInstance");
+const XTOKENS_INTERFACE = new ethers.utils.Interface(XTOKENS_CONTRACT.contract.abi);
 
-async function getBalance(context, blockHeight, address) {
+async function getBalance(context: DevTestContext, blockHeight: number, address: string) {
   const blockHash = await context.polkadotApi.rpc.chain.getBlockHash(blockHeight);
   const account = await context.polkadotApi.query.system.account.at(blockHash, address);
-  return account.data.free;
+  return account.data.free.toBigInt();
 }
 
-describeDevMoonbeamAllEthTxTypes("Precompiles - xtokens", (context) => {
+describeDevMoonbeam("Precompiles - xtokens", (context) => {
   it("allows to issue transfer xtokens", async function () {
-    const contractData = await getCompiled("XtokensInstance");
-    const iFace = new ethers.utils.Interface(contractData.contract.abi);
-    const { contract, rawTx } = await createContract(context, "XtokensInstance");
-    const address = contract.options.address;
-    await context.createBlock({ transactions: [rawTx] });
+    const { rawTx } = await createContract(context, "XtokensInstance");
+    await context.createBlock(rawTx);
     // Junction::AccountId32
     const destination_enum_selector = "0x01";
     // [0x01; 32]
@@ -35,7 +47,7 @@ describeDevMoonbeamAllEthTxTypes("Precompiles - xtokens", (context) => {
     // We will transfer the tokens the former account in the relay chain
     // However it does not really matter as we are not testing what happens
     // in the relay side of things
-    let destination =
+    const destination =
       // Destination as multilocation
       [
         // one parent
@@ -44,17 +56,17 @@ describeDevMoonbeamAllEthTxTypes("Precompiles - xtokens", (context) => {
         [destination_enum_selector + destination_address + destination_network_id],
       ];
     // 1000 units
-    let amountTransferred = 1000;
+    const amountTransferred = 1000n;
 
     // weight
-    let weight = 100;
+    const weight = 100n;
 
-    const data = iFace.encodeFunctionData(
+    const data = XTOKENS_INTERFACE.encodeFunctionData(
       // action
       "transfer",
       [
         // address of the multiasset, in this case our own balances
-        BALANCES_ADDRESS,
+        PRECOMPILE_NATIVE_ERC20_ADDRESS,
         // amount
         amountTransferred,
         // Destination as multilocation
@@ -64,42 +76,30 @@ describeDevMoonbeamAllEthTxTypes("Precompiles - xtokens", (context) => {
       ]
     );
 
-    const base_fee = await context.web3.eth.getGasPrice();
+    const { result } = await context.createBlock(
+      createTransaction(context, {
+        ...ALITH_TRANSACTION_TEMPLATE,
+        to: PRECOMPILE_XTOKENS_ADDRESS,
+        data,
+      })
+    );
 
-    const tx = await createTransaction(context, {
-      from: GENESIS_ACCOUNT,
-      privateKey: GENESIS_ACCOUNT_PRIVATE_KEY,
-      value: "0x0",
-      gas: "0x200000",
-      gasPrice: base_fee,
-      to: ADDRESS_XTOKENS,
-      data,
-    });
-
-    const block = await context.createBlock({
-      transactions: [tx],
-    });
-
-    const receipt = await context.web3.eth.getTransactionReceipt(block.txResults[0].result);
-    const fees = BigInt(receipt.gasUsed) * BigInt(base_fee);
+    const receipt = await context.web3.eth.getTransactionReceipt(result.hash);
+    const gasPrice = receipt.effectiveGasPrice;
+    const fees = BigInt(receipt.gasUsed) * BigInt(gasPrice);
 
     // our tokens + fees should have been spent
-    expect(BigInt(await getBalance(context, 2, GENESIS_ACCOUNT))).to.equal(
-      BigInt(await getBalance(context, 1, GENESIS_ACCOUNT)) -
-        BigInt(amountTransferred) -
-        BigInt(fees)
+    expect(await getBalance(context, 2, alith.address)).to.equal(
+      (await getBalance(context, 1, alith.address)) - amountTransferred - fees
     );
-    await verifyLatestBlockFees(context, expect, BigInt(amountTransferred));
+    await verifyLatestBlockFees(context, amountTransferred);
   });
 });
 
-describeDevMoonbeamAllEthTxTypes("Precompiles - xtokens", (context) => {
+describeDevMoonbeam("Precompiles - xtokens", (context) => {
   it("allows to issue transfer xtokens with fee", async function () {
-    const contractData = await getCompiled("XtokensInstance");
-    const iFace = new ethers.utils.Interface(contractData.contract.abi);
-    const { contract, rawTx } = await createContract(context, "XtokensInstance");
-    const address = contract.options.address;
-    await context.createBlock({ transactions: [rawTx] });
+    const { rawTx } = await createContract(context, "XtokensInstance");
+    await context.createBlock(rawTx);
     // Junction::AccountId32
     const destination_enum_selector = "0x01";
     // [0x01; 32]
@@ -111,7 +111,7 @@ describeDevMoonbeamAllEthTxTypes("Precompiles - xtokens", (context) => {
     // We will transfer the tokens the former account in the relay chain
     // However it does not really matter as we are not testing what happens
     // in the relay side of things
-    let destination =
+    const destination =
       // Destination as multilocation
       [
         // one parent
@@ -120,20 +120,20 @@ describeDevMoonbeamAllEthTxTypes("Precompiles - xtokens", (context) => {
         [destination_enum_selector + destination_address + destination_network_id],
       ];
     // 1000 units
-    let amountTransferred = 1000;
+    const amountTransferred = 1000n;
 
     // 100 units
-    let fee = 100;
+    const fee = 100n;
 
     // weight
-    let weight = 100;
+    const weight = 100n;
 
-    const data = iFace.encodeFunctionData(
+    const data = XTOKENS_INTERFACE.encodeFunctionData(
       // action
-      "transfer_with_fee",
+      "transferWithFee",
       [
         // address of the multiasset, in this case our own balances
-        BALANCES_ADDRESS,
+        PRECOMPILE_NATIVE_ERC20_ADDRESS,
         // amount
         amountTransferred,
         // fee
@@ -145,43 +145,30 @@ describeDevMoonbeamAllEthTxTypes("Precompiles - xtokens", (context) => {
       ]
     );
 
-    const base_fee = await context.web3.eth.getGasPrice();
+    const { result } = await context.createBlock(
+      createTransaction(context, {
+        ...ALITH_TRANSACTION_TEMPLATE,
+        to: PRECOMPILE_XTOKENS_ADDRESS,
+        data,
+      })
+    );
 
-    const tx = await createTransaction(context, {
-      from: GENESIS_ACCOUNT,
-      privateKey: GENESIS_ACCOUNT_PRIVATE_KEY,
-      value: "0x0",
-      gas: "0x200000",
-      gasPrice: base_fee,
-      to: ADDRESS_XTOKENS,
-      data,
-    });
-
-    const block = await context.createBlock({
-      transactions: [tx],
-    });
-
-    const receipt = await context.web3.eth.getTransactionReceipt(block.txResults[0].result);
-    const fees = BigInt(receipt.gasUsed) * BigInt(base_fee);
+    const receipt = await context.web3.eth.getTransactionReceipt(result.hash);
+    const gasPrice = receipt.effectiveGasPrice;
+    const fees = BigInt(receipt.gasUsed) * BigInt(gasPrice);
 
     // our tokens + fees should have been spent
-    expect(BigInt(await getBalance(context, 2, GENESIS_ACCOUNT))).to.equal(
-      BigInt(await getBalance(context, 1, GENESIS_ACCOUNT)) -
-        BigInt(amountTransferred) -
-        BigInt(fee) -
-        BigInt(fees)
+    expect(await getBalance(context, 2, alith.address)).to.equal(
+      (await getBalance(context, 1, alith.address)) - amountTransferred - BigInt(fee) - fees
     );
-    await verifyLatestBlockFees(context, expect, BigInt(amountTransferred + fee));
+    await verifyLatestBlockFees(context, BigInt(amountTransferred + fee));
   });
 });
 
-describeDevMoonbeamAllEthTxTypes("Precompiles - xtokens", (context) => {
+describeDevMoonbeam("Precompiles - xtokens", (context) => {
   it("allows to issue transfer_multiasset xtokens", async function () {
-    const contractData = await getCompiled("XtokensInstance");
-    const iFace = new ethers.utils.Interface(contractData.contract.abi);
-    const { contract, rawTx } = await createContract(context, "XtokensInstance");
-    const address = contract.options.address;
-    await context.createBlock({ transactions: [rawTx] });
+    const { rawTx } = await createContract(context, "XtokensInstance");
+    await context.createBlock(rawTx);
     // Junction::AccountId32
     const destination_enum_selector = "0x01";
     // [0x01; 32]
@@ -196,18 +183,18 @@ describeDevMoonbeamAllEthTxTypes("Precompiles - xtokens", (context) => {
     // This represents X1(PalletInstance(3)))
 
     // This multilocation represents our native token
-    let asset = [
+    const asset = [
       // zero parents
       0,
       // X1(PalletInstance)
-      // PalletInstance: Selector (04) + pallet instance 1 byte (03)
+      // PalletInstance: Selector (04) + palconst instance 1 byte (03)
       [x2_pallet_instance_enum_selector + x2_instance],
     ];
     // This represents X2(Parent, AccountId32([0x01; 32]))
     // We will transfer the tokens the former account in the relay chain
     // However it does not really matter as we are not testing what happens
     // in the relay side of things
-    let destination =
+    const destination =
       // Destination as multilocation
       [
         // one parent
@@ -216,15 +203,15 @@ describeDevMoonbeamAllEthTxTypes("Precompiles - xtokens", (context) => {
         [destination_enum_selector + destination_address + destination_network_id],
       ];
     // 1000 units
-    let amountTransferred = 1000;
+    const amountTransferred = 1000n;
 
     // weight
-    let weight = 100;
+    const weight = 100;
 
     // encode the input with ethers
-    const data = iFace.encodeFunctionData(
+    const data = XTOKENS_INTERFACE.encodeFunctionData(
       // action
-      "transfer_multiasset",
+      "transferMultiasset",
       [
         asset,
         // amount
@@ -238,40 +225,30 @@ describeDevMoonbeamAllEthTxTypes("Precompiles - xtokens", (context) => {
     const base_fee = await context.web3.eth.getGasPrice();
 
     // create tx
-    const tx = await createTransaction(context, {
-      from: GENESIS_ACCOUNT,
-      privateKey: GENESIS_ACCOUNT_PRIVATE_KEY,
-      value: "0x0",
-      gas: "0x200000",
-      gasPrice: base_fee,
-      to: ADDRESS_XTOKENS,
-      data,
-    });
+    const { result } = await context.createBlock(
+      createTransaction(context, {
+        ...ALITH_TRANSACTION_TEMPLATE,
+        to: PRECOMPILE_XTOKENS_ADDRESS,
+        data,
+      })
+    );
 
-    const block = await context.createBlock({
-      transactions: [tx],
-    });
-
-    const receipt = await context.web3.eth.getTransactionReceipt(block.txResults[0].result);
-    const fees = BigInt(receipt.gasUsed) * BigInt(base_fee);
+    const receipt = await context.web3.eth.getTransactionReceipt(result.hash);
+    const gasPrice = receipt.effectiveGasPrice;
+    const fees = BigInt(receipt.gasUsed) * BigInt(gasPrice);
 
     // our tokens + fees should have been spent
-    expect(BigInt(await getBalance(context, 2, GENESIS_ACCOUNT))).to.equal(
-      BigInt(await getBalance(context, 1, GENESIS_ACCOUNT)) -
-        BigInt(amountTransferred) -
-        BigInt(fees)
+    expect(await getBalance(context, 2, alith.address)).to.equal(
+      (await getBalance(context, 1, alith.address)) - amountTransferred - fees
     );
-    await verifyLatestBlockFees(context, expect, BigInt(amountTransferred));
+    await verifyLatestBlockFees(context, amountTransferred);
   });
 });
 
-describeDevMoonbeamAllEthTxTypes("Precompiles - xtokens", (context) => {
+describeDevMoonbeam("Precompiles - xtokens", (context) => {
   it("allows to issue transfer_multiasset xtokens with fee", async function () {
-    const contractData = await getCompiled("XtokensInstance");
-    const iFace = new ethers.utils.Interface(contractData.contract.abi);
-    const { contract, rawTx } = await createContract(context, "XtokensInstance");
-    const address = contract.options.address;
-    await context.createBlock({ transactions: [rawTx] });
+    const { rawTx } = await createContract(context, "XtokensInstance");
+    await context.createBlock(rawTx);
     // Junction::AccountId32
     const destination_enum_selector = "0x01";
     // [0x01; 32]
@@ -286,18 +263,18 @@ describeDevMoonbeamAllEthTxTypes("Precompiles - xtokens", (context) => {
     // This represents X1(PalletInstance(3)))
 
     // This multilocation represents our native token
-    let asset = [
+    const asset = [
       // one parent
       0,
       // X1(PalletInstance)
-      // PalletInstance: Selector (04) + pallet instance 1 byte (03)
+      // PalletInstance: Selector (04) + palconst instance 1 byte (03)
       [x2_pallet_instance_enum_selector + x2_instance],
     ];
     // This represents X2(Parent, AccountId32([0x01; 32]))
     // We will transfer the tokens the former account in the relay chain
     // However it does not really matter as we are not testing what happens
     // in the relay side of things
-    let destination =
+    const destination =
       // Destination as multilocation
       [
         // one parent
@@ -306,18 +283,18 @@ describeDevMoonbeamAllEthTxTypes("Precompiles - xtokens", (context) => {
         [destination_enum_selector + destination_address + destination_network_id],
       ];
     // 1000 units
-    let amountTransferred = 1000;
+    const amountTransferred = 1000n;
 
     // 100 units
-    let fee = 100;
+    const fee = 100n;
 
     // weight
-    let weight = 100;
+    const weight = 100;
 
     // encode the input with ethers
-    const data = iFace.encodeFunctionData(
+    const data = XTOKENS_INTERFACE.encodeFunctionData(
       // action
-      "transfer_multiasset_with_fee",
+      "transferMultiassetWithFee",
       [
         asset,
         // amount
@@ -333,41 +310,31 @@ describeDevMoonbeamAllEthTxTypes("Precompiles - xtokens", (context) => {
     const base_fee = await context.web3.eth.getGasPrice();
 
     // create tx
-    const tx = await createTransaction(context, {
-      from: GENESIS_ACCOUNT,
-      privateKey: GENESIS_ACCOUNT_PRIVATE_KEY,
-      value: "0x0",
-      gas: "0x200000",
-      gasPrice: base_fee,
-      to: ADDRESS_XTOKENS,
-      data,
-    });
 
-    const block = await context.createBlock({
-      transactions: [tx],
-    });
+    const { result } = await context.createBlock(
+      createTransaction(context, {
+        ...ALITH_TRANSACTION_TEMPLATE,
+        to: PRECOMPILE_XTOKENS_ADDRESS,
+        data,
+      })
+    );
 
-    const receipt = await context.web3.eth.getTransactionReceipt(block.txResults[0].result);
-    const fees = BigInt(receipt.gasUsed) * BigInt(base_fee);
+    const receipt = await context.web3.eth.getTransactionReceipt(result.hash);
+    const gasPrice = receipt.effectiveGasPrice;
+    const fees = BigInt(receipt.gasUsed) * BigInt(gasPrice);
 
     // our tokens + fees should have been spent
-    expect(BigInt(await getBalance(context, 2, GENESIS_ACCOUNT))).to.equal(
-      BigInt(await getBalance(context, 1, GENESIS_ACCOUNT)) -
-        BigInt(amountTransferred) -
-        BigInt(fee) -
-        BigInt(fees)
+    expect(await getBalance(context, 2, alith.address)).to.equal(
+      (await getBalance(context, 1, alith.address)) - amountTransferred - BigInt(fee) - fees
     );
-    await verifyLatestBlockFees(context, expect, BigInt(amountTransferred + fee));
+    await verifyLatestBlockFees(context, amountTransferred + fee);
   });
 });
 
-describeDevMoonbeamAllEthTxTypes("Precompiles - xtokens", (context) => {
+describeDevMoonbeam("Precompiles - xtokens", (context) => {
   it("allows to issue transfer multicurrencies xtokens", async function () {
-    const contractData = await getCompiled("XtokensInstance");
-    const iFace = new ethers.utils.Interface(contractData.contract.abi);
-    const { contract, rawTx } = await createContract(context, "XtokensInstance");
-    const address = contract.options.address;
-    await context.createBlock({ transactions: [rawTx] });
+    const { rawTx } = await createContract(context, "XtokensInstance");
+    await context.createBlock(rawTx);
     // Junction::AccountId32
     const destination_enum_selector = "0x01";
     // [0x01; 32]
@@ -375,14 +342,14 @@ describeDevMoonbeamAllEthTxTypes("Precompiles - xtokens", (context) => {
     // NetworkId::Any
     const destination_network_id = "00";
     // 1000 units
-    let amountTransferred = 1000;
-    let currencies = [[BALANCES_ADDRESS, amountTransferred]];
+    const amountTransferred = 1000n;
+    const currencies = [[PRECOMPILE_NATIVE_ERC20_ADDRESS, amountTransferred]];
 
     // This represents X2(Parent, AccountId32([0x01; 32]))
     // We will transfer the tokens the former account in the relay chain
     // However it does not really matter as we are not testing what happens
     // in the relay side of things
-    let destination =
+    const destination =
       // Destination as multilocation
       [
         // one parent
@@ -392,14 +359,14 @@ describeDevMoonbeamAllEthTxTypes("Precompiles - xtokens", (context) => {
       ];
 
     // fee_item
-    let fee_item = 0;
+    const fee_item = 0;
 
     // weight
-    let weight = 100;
+    const weight = 100;
 
-    const data = iFace.encodeFunctionData(
+    const data = XTOKENS_INTERFACE.encodeFunctionData(
       // action
-      "transfer_multi_currencies",
+      "transferMultiCurrencies",
       [
         // currencies, only one in this case
         currencies,
@@ -411,43 +378,30 @@ describeDevMoonbeamAllEthTxTypes("Precompiles - xtokens", (context) => {
         weight,
       ]
     );
+    const { result } = await context.createBlock(
+      createTransaction(context, {
+        ...ALITH_TRANSACTION_TEMPLATE,
+        to: PRECOMPILE_XTOKENS_ADDRESS,
+        data,
+      })
+    );
 
-    const base_fee = await context.web3.eth.getGasPrice();
-
-    const tx = await createTransaction(context, {
-      from: GENESIS_ACCOUNT,
-      privateKey: GENESIS_ACCOUNT_PRIVATE_KEY,
-      value: "0x0",
-      gas: "0x200000",
-      gasPrice: base_fee,
-      to: ADDRESS_XTOKENS,
-      data,
-    });
-
-    const block = await context.createBlock({
-      transactions: [tx],
-    });
-
-    const receipt = await context.web3.eth.getTransactionReceipt(block.txResults[0].result);
-    const fees = BigInt(receipt.gasUsed) * BigInt(base_fee);
+    const receipt = await context.web3.eth.getTransactionReceipt(result.hash);
+    const gasPrice = receipt.effectiveGasPrice;
+    const fees = BigInt(receipt.gasUsed) * BigInt(gasPrice);
 
     // our tokens + fees should have been spent
-    expect(BigInt(await getBalance(context, 2, GENESIS_ACCOUNT))).to.equal(
-      BigInt(await getBalance(context, 1, GENESIS_ACCOUNT)) -
-        BigInt(amountTransferred) -
-        BigInt(fees)
+    expect(await getBalance(context, 2, alith.address)).to.equal(
+      (await getBalance(context, 1, alith.address)) - amountTransferred - fees
     );
-    await verifyLatestBlockFees(context, expect, BigInt(amountTransferred));
+    await verifyLatestBlockFees(context, amountTransferred);
   });
 });
 
-describeDevMoonbeamAllEthTxTypes("Precompiles - xtokens", (context) => {
+describeDevMoonbeam("Precompiles - xtokens", (context) => {
   it("allows to issue transfer multiassets xtokens", async function () {
-    const contractData = await getCompiled("XtokensInstance");
-    const iFace = new ethers.utils.Interface(contractData.contract.abi);
-    const { contract, rawTx } = await createContract(context, "XtokensInstance");
-    const address = contract.options.address;
-    await context.createBlock({ transactions: [rawTx] });
+    const { rawTx } = await createContract(context, "XtokensInstance");
+    await context.createBlock(rawTx);
     // Junction::AccountId32
     const destination_enum_selector = "0x01";
     // [0x01; 32]
@@ -455,28 +409,28 @@ describeDevMoonbeamAllEthTxTypes("Precompiles - xtokens", (context) => {
     // NetworkId::Any
     const destination_network_id = "00";
     // 1000 units
-    let amountTransferred = 1000;
+    const amountTransferred = 1000n;
 
     // Junction::PalletInstance(3)
     const x2_pallet_instance_enum_selector = "0x04";
     const x2_instance = "03";
 
     // This multilocation represents our native token
-    let asset = [
+    const asset = [
       // one parent
       0,
       // X1(PalletInstance)
-      // PalletInstance: Selector (04) + pallet instance 1 byte (03)
+      // PalletInstance: Selector (04) + palconst instance 1 byte (03)
       [x2_pallet_instance_enum_selector + x2_instance],
     ];
 
-    let multiassets = [[asset, amountTransferred]];
+    const multiassets = [[asset, amountTransferred]];
 
     // This represents X2(Parent, AccountId32([0x01; 32]))
     // We will transfer the tokens the former account in the relay chain
     // However it does not really matter as we are not testing what happens
     // in the relay side of things
-    let destination =
+    const destination =
       // Destination as multilocation
       [
         // one parent
@@ -486,14 +440,14 @@ describeDevMoonbeamAllEthTxTypes("Precompiles - xtokens", (context) => {
       ];
 
     // fee_item
-    let fee_item = 0;
+    const fee_item = 0;
 
     // weight
-    let weight = 100;
+    const weight = 100;
 
-    const data = iFace.encodeFunctionData(
+    const data = XTOKENS_INTERFACE.encodeFunctionData(
       // action
-      "transfer_multi_assets",
+      "transferMultiAssets",
       [
         // assets, only one in this case
         multiassets,
@@ -506,31 +460,22 @@ describeDevMoonbeamAllEthTxTypes("Precompiles - xtokens", (context) => {
       ]
     );
 
-    const base_fee = await context.web3.eth.getGasPrice();
+    const { result } = await context.createBlock(
+      createTransaction(context, {
+        ...ALITH_TRANSACTION_TEMPLATE,
+        to: PRECOMPILE_XTOKENS_ADDRESS,
+        data,
+        gasPrice: MIN_GAS_PRICE,
+      })
+    );
 
-    const tx = await createTransaction(context, {
-      from: GENESIS_ACCOUNT,
-      privateKey: GENESIS_ACCOUNT_PRIVATE_KEY,
-      value: "0x0",
-      gas: "0x200000",
-      gasPrice: base_fee,
-      to: ADDRESS_XTOKENS,
-      data,
-    });
-
-    const block = await context.createBlock({
-      transactions: [tx],
-    });
-
-    const receipt = await context.web3.eth.getTransactionReceipt(block.txResults[0].result);
-    const fees = BigInt(receipt.gasUsed) * BigInt(base_fee);
+    const receipt = await context.web3.eth.getTransactionReceipt(result.hash);
+    const fees = BigInt(receipt.gasUsed) * BigInt(DEFAULT_TXN_MAX_BASE_FEE);
 
     // our tokens + fees should have been spent
-    expect(BigInt(await getBalance(context, 2, GENESIS_ACCOUNT))).to.equal(
-      BigInt(await getBalance(context, 1, GENESIS_ACCOUNT)) -
-        BigInt(amountTransferred) -
-        BigInt(fees)
+    expect(await getBalance(context, 2, alith.address)).to.equal(
+      (await getBalance(context, 1, alith.address)) - amountTransferred - fees
     );
-    await verifyLatestBlockFees(context, expect, BigInt(amountTransferred));
+    await verifyLatestBlockFees(context, amountTransferred);
   });
 });

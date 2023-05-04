@@ -1,15 +1,15 @@
 import { Keyring } from "@polkadot/api";
 import { expect } from "chai";
+import { alith } from "../../../util/accounts";
 
-import { ALITH_ADDRESS, ALITH_PRIV_KEY } from "../../../util/constants";
 import { describeParachain } from "../../../util/setup-para-tests";
 import { sendAllStreamAndWaitLast } from "../../../util/transactions";
 
 // This test will run on local until the new runtime is available
 
-const runtimeVersion = "local";
+const runtimeTag = "local";
 describeParachain(
-  `Runtime ${runtimeVersion} migration`,
+  `Runtime ${runtimeTag} migration`,
   {
     parachain: {
       chain: "moonbase-local",
@@ -27,12 +27,11 @@ describeParachain(
       this.timeout(500000);
 
       const keyring = new Keyring({ type: "ethereum" });
-      const alith = await keyring.addFromUri(ALITH_PRIV_KEY, null, "ethereum");
 
       // verify alith initial total staked
       expect(
-        ((await context.polkadotApiParaone.query.parachainStaking.candidatePool()) as any)
-          .find((c) => c.owner.toString() == ALITH_ADDRESS)
+        (await context.polkadotApiParaone.query.parachainStaking.candidatePool())
+          .find((c) => c.owner.toString() == alith.address)
           .amount.toBigInt()
       ).to.be.equal(1000000000000000000000n);
 
@@ -46,7 +45,7 @@ describeParachain(
       );
 
       const minDelegatorStk = (
-        (await context.polkadotApiParaone.consts.parachainStaking.minDelegatorStk) as any
+        await context.polkadotApiParaone.consts.parachainStaking.minDelegatorStk
       ).toBigInt();
 
       process.stdout.write(
@@ -93,8 +92,8 @@ describeParachain(
 
       // verify alith new delegators are added
       expect(
-        ((await context.polkadotApiParaone.query.parachainStaking.candidatePool()) as any)
-          .find((c) => c.owner.toString() == ALITH_ADDRESS)
+        (await context.polkadotApiParaone.query.parachainStaking.candidatePool())
+          .find((c) => c.owner.toString() == alith.address)
           .amount.toBigInt()
       ).to.be.equal(1000000000000000000000n + minDelegatorStk * BigInt(delegatorCount));
 
@@ -117,18 +116,18 @@ describeParachain(
       process.stdout.write(`Verifying candidate pool bug pre-migration...`);
       // Verify BUG: alith total didn't increase with the bond more
       expect(
-        ((await context.polkadotApiParaone.query.parachainStaking.candidatePool()) as any)
-          .find((c) => c.owner.toString() == ALITH_ADDRESS)
+        (await context.polkadotApiParaone.query.parachainStaking.candidatePool())
+          .find((c) => c.owner.toString() == alith.address)
           .amount.toBigInt()
       ).to.be.equal(1000000000000000000000n + minDelegatorStk * BigInt(delegatorCount));
       process.stdout.write(`✅\n`);
 
-      await context.upgradeRuntime(alith, "moonbase", runtimeVersion);
+      await context.upgradeRuntime({ runtimeName: "moonbase", runtimeTag });
 
       process.stdout.write("Verifying candidate pool is fixed post-migration...");
       expect(
-        ((await context.polkadotApiParaone.query.parachainStaking.candidatePool()) as any)
-          .find((c) => c.owner.toString() == ALITH_ADDRESS)
+        (await context.polkadotApiParaone.query.parachainStaking.candidatePool())
+          .find((c) => c.owner.toString() == alith.address)
           .amount.toBigInt()
       ).to.be.equal(
         1000000000000000000000n + (minDelegatorStk + 1n * 10n ** 18n) * BigInt(delegatorCount)

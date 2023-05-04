@@ -1,12 +1,14 @@
-import Web3 from "web3";
 import { ApiPromise, WsProvider } from "@polkadot/api";
-import { typesBundlePre900 } from "../../moonbeam-types-bundle";
-import { JsonRpcResponse } from "web3-core-helpers";
 import { ethers } from "ethers";
-import { GENESIS_ACCOUNT_PRIVATE_KEY } from "./constants";
+import Web3 from "web3";
+import { Log } from "web3-core";
+import { JsonRpcResponse } from "web3-core-helpers";
 import { Subscription as Web3Subscription } from "web3-core-subscriptions";
 import { BlockHeader } from "web3-eth";
-import { Log } from "web3-core";
+
+import { typesBundlePre900 } from "moonbeam-types-bundle";
+import { alith, ALITH_PRIVATE_KEY } from "./accounts";
+import { MIN_GAS_PRICE } from "./constants";
 
 export async function customWeb3Request(web3: Web3, method: string, params: any[]) {
   return new Promise<JsonRpcResponse>((resolve, reject) => {
@@ -34,6 +36,31 @@ export async function customWeb3Request(web3: Web3, method: string, params: any[
   });
 }
 
+export interface Web3EthCallOptions {
+  from?: string | number;
+  to: string;
+  value?: number | string | bigint;
+  gas?: number | string;
+  gasPrice?: number | string | bigint;
+  maxPriorityFeePerGas?: number | string | bigint;
+  maxFeePerGas?: number | string | bigint;
+  data?: string;
+  nonce?: number;
+}
+
+export async function web3EthCall(web3: Web3, options: Web3EthCallOptions) {
+  return await customWeb3Request(web3, "eth_call", [
+    {
+      from: options.from == undefined ? options.from : alith.address,
+      value: options.value,
+      gas: options.gas == undefined ? options.gas : 256000,
+      gasPrice: options.gas == undefined ? options.gas : `0x${MIN_GAS_PRICE}`,
+      to: options.to,
+      data: options.data,
+    },
+  ]);
+}
+
 // Extra type because web3 is not well typed
 export interface Subscription<T> extends Web3Subscription<T> {
   once: (type: "data" | "connected", handler: (data: T) => void) => Subscription<T>;
@@ -55,14 +82,11 @@ export type EnhancedWeb3 = Web3 & {
   customRequest: (method: string, params: any[]) => Promise<JsonRpcResponse>;
 };
 
-export const provideWeb3Api = async (port: number, protocol: "ws" | "http" = "http") => {
-  const web3 =
-    protocol == "ws"
-      ? new Web3(`ws://localhost:${port}`) // TODO: restore support for
-      : new Web3(`http://localhost:${port}`);
+export const provideWeb3Api = async (uri: string) => {
+  const web3 = new Web3(uri);
 
   // Adding genesis account for convenience
-  web3.eth.accounts.wallet.add(GENESIS_ACCOUNT_PRIVATE_KEY);
+  web3.eth.accounts.wallet.add(ALITH_PRIVATE_KEY);
 
   // Hack to add customRequest method.
   (web3 as any).customRequest = (method: string, params: any[]) =>
@@ -76,13 +100,15 @@ export const providePolkadotApi = async (port: number, isNotMoonbeam?: boolean) 
     ? await ApiPromise.create({
         initWasm: false,
         provider: new WsProvider(`ws://localhost:${port}`),
+        noInitWarn: true,
       })
     : await ApiPromise.create({
         provider: new WsProvider(`ws://localhost:${port}`),
         typesBundle: typesBundlePre900 as any,
+        noInitWarn: true,
       });
 };
 
-export const provideEthersApi = async (port: number) => {
-  return new ethers.providers.JsonRpcProvider(`http://localhost:${port}`);
+export const provideEthersApi = async (uri: string) => {
+  return new ethers.providers.JsonRpcProvider(uri);
 };

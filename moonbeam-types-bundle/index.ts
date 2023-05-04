@@ -1,4 +1,4 @@
-import {
+import type {
   OverrideBundleDefinition,
   OverrideBundleType,
   OverrideModuleType,
@@ -6,6 +6,7 @@ import {
   DefinitionRpcSub,
   RegistryTypes,
   OverrideVersionedType,
+  // @ts-expect-error
 } from "@polkadot/types/types";
 
 // override types for specific pallets
@@ -76,6 +77,18 @@ export const rpcDefinitions: Record<string, Record<string, DefinitionRpc | Defin
       type: "Result<()>",
     },
   },
+  moon: {
+    isBlockFinalized: {
+      description: "Returns whether an Ethereum block is finalized",
+      params: [{ name: "blockHash", type: "Hash" }],
+      type: "bool",
+    },
+    isTxFinalized: {
+      description: "Returns whether an Ethereum transaction is finalized",
+      params: [{ name: "txHash", type: "Hash" }],
+      type: "bool",
+    },
+  },
 };
 
 const TYPES_0_4: RegistryTypes = {
@@ -88,6 +101,8 @@ const TYPES_0_4: RegistryTypes = {
     nonce: "U256",
     balance: "u128",
   },
+  EthTransaction: "LegacyTransaction",
+  DispatchErrorModule: "DispatchErrorModuleU8",
 };
 const { RefCount, ...TYPES_5_5 } = TYPES_0_4;
 
@@ -421,7 +436,7 @@ export const moonbeamDefinitions = {
   rpc: rpcDefinitions,
   instances: {
     council: ["councilCollective"],
-    technicalCommittee: ["techCommitteeCollective"],
+    technicalCommittee: ["techCommitteeCollective", "openTechCommitteeCollective"],
   },
   types: [
     {
@@ -507,3 +522,6 @@ export const typesBundleDeprecated = {
     moonriver: moonbeamDefinitionsDeprecated,
   },
 } as OverrideBundleType;
+
+// default types to use
+export const types = typesBundlePre900;

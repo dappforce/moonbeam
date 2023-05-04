@@ -1,36 +1,34 @@
 import "@polkadot/api-augment";
+
 import { ApiPromise } from "@polkadot/api";
-import { ethers } from "ethers";
-import { provideWeb3Api, provideEthersApi, providePolkadotApi, EnhancedWeb3 } from "./providers";
-import { DEBUG_MODE } from "./constants";
-import { HttpProvider } from "web3-core";
-import fs from "fs";
 import chalk from "chalk";
+import { ethers } from "ethers";
+import child_process from "child_process";
+import { HttpProvider } from "web3-core";
+
+import { DEBUG_MODE } from "./constants";
 import {
-  getRuntimeWasm,
   NodePorts,
-  ParaTestOptions,
   ParachainPorts,
+  ParaTestOptions,
   startParachainNodes,
   stopParachainNodes,
 } from "./para-node";
-import { KeyringPair } from "@substrate/txwrapper-core";
-import { sha256 } from "ethers/lib/utils";
+import { EnhancedWeb3, provideEthersApi, providePolkadotApi, provideWeb3Api } from "./providers";
+import { UpgradePreferences, upgradeRuntime } from "./upgrade";
+
 const debug = require("debug")("test:setup");
+
+const PORT_PREFIX = (process.env.PORT_PREFIX && parseInt(process.env.PORT_PREFIX)) || -1;
 
 export interface ParaTestContext {
   createWeb3: (protocol?: "ws" | "http") => Promise<EnhancedWeb3>;
   createEthers: () => Promise<ethers.providers.JsonRpcProvider>;
-  createPolkadotApiParachain: (parachainNumber) => Promise<ApiPromise>;
+  createPolkadotApiParachain: (parachainNumber: number) => Promise<ApiPromise>;
   createPolkadotApiParachains: () => Promise<ApiPromise>;
   createPolkadotApiRelaychains: () => Promise<ApiPromise>;
   waitBlocks: (count: number) => Promise<number>; // return current block when the promise resolves
-  upgradeRuntime: (
-    from: KeyringPair,
-    runtimeName: "moonbase" | "moonriver" | "moonbeam",
-    runtimeVersion: string,
-    waitMigration?: boolean
-  ) => Promise<number>;
+  upgradeRuntime: (preferences: UpgradePreferences) => Promise<number>;
   blockNumber: number;
 
   // We also provided singleton providers for simplicity
@@ -57,7 +55,7 @@ export function describeParachain(
 ) {
   describe(title, function () {
     // Set timeout to 5000 for all tests.
-    this.timeout(300000);
+    this.timeout("spec" in options.parachain ? 3600000 : 300000);
 
     // The context is initialized empty to allow passing a reference
     // and to be filled once the node information is retrieved
@@ -65,19 +63,34 @@ export function describeParachain(
 
     // Making sure the Moonbeam node has started
     before("Starting Moonbeam Test Node", async function () {
-      this.timeout(300000);
       try {
         const init = !DEBUG_MODE
           ? await startParachainNodes(options)
+          : PORT_PREFIX == -1
+          ? {
+              paraPorts: [
+                {
+                  parachainId: 1000,
+                  ports: [
+                    {
+                      p2pPort: 30333,
+                      wsPort: 9944,
+                      rpcPort: 9933,
+                    },
+                  ],
+                },
+              ],
+              relayPorts: [],
+            }
           : {
               paraPorts: [
                 {
                   parachainId: 1000,
                   ports: [
                     {
-                      p2pPort: 19931,
-                      wsPort: 19933,
-                      rpcPort: 19932,
+                      p2pPort: PORT_PREFIX * 1000 + 100,
+                      wsPort: PORT_PREFIX * 1000 + 102,
+                      rpcPort: PORT_PREFIX * 1000 + 101,
                     },
                   ],
                 },
@@ -90,16 +103,18 @@ export function describeParachain(
         context._polkadotApiParachains = [];
         context._polkadotApiRelaychains = [];
         context._web3Providers = [];
+        context.blockNumber = 0;
 
         context.createWeb3 = async (protocol: "ws" | "http" = "http") => {
           const provider =
             protocol == "ws"
-              ? await provideWeb3Api(init.paraPorts[0].ports[0].wsPort, "ws")
-              : await provideWeb3Api(init.paraPorts[0].ports[0].rpcPort, "http");
+              ? await provideWeb3Api(`ws://localhost:${init.paraPorts[0].ports[0].wsPort}`)
+              : await provideWeb3Api(`http://localhost:${init.paraPorts[0].ports[0].rpcPort}`);
           context._web3Providers.push((provider as any)._provider);
           return provider;
         };
-        context.createEthers = async () => provideEthersApi(init.paraPorts[0].ports[0].rpcPort);
+        context.createEthers = async () =>
+          provideEthersApi(`http://localhost:${init.paraPorts[0].ports[0].rpcPort}`);
         context.createPolkadotApiParachain = async (parachainNumber: number) => {
           const promise = providePolkadotApi(init.paraPorts[parachainNumber].ports[0].wsPort);
           context._polkadotApiParachains.push({
@@ -154,8 +169,11 @@ export function describeParachain(
           return apiPromises[0];
         };
 
-        let pendingPromises = [];
-        const subBlocks = async (api) => {
+        let pendingCallbacks: {
+          blockNumber: number;
+          resolve: (blockNumber: number) => void;
+        }[] = [];
+        const subBlocks = async (api: ApiPromise) => {
           return api.rpc.chain.subscribeNewHeads(async (header) => {
             context.blockNumber = header.number.toNumber();
             if (context.blockNumber == 0) {
@@ -163,13 +181,14 @@ export function describeParachain(
                 `Start listening for new blocks. Production will start in ${chalk.red(`1 minute`)}`
               );
             }
+            debug(`New block: #${context.blockNumber}`);
 
-            let i = pendingPromises.length;
+            let i = pendingCallbacks.length;
             while (i--) {
-              const pendingPromise = pendingPromises[i];
-              if (pendingPromise.blockNumber <= context.blockNumber) {
-                pendingPromises.splice(i, 1);
-                pendingPromise.resolve(context.blockNumber);
+              const pendingCallback = pendingCallbacks[i];
+              if (pendingCallback.blockNumber <= context.blockNumber) {
+                pendingCallbacks.splice(i, 1);
+                pendingCallback.resolve(context.blockNumber);
               }
             }
           });
@@ -180,129 +199,15 @@ export function describeParachain(
 
         context.waitBlocks = async (count: number) => {
           return new Promise<number>((resolve) => {
-            pendingPromises.push({
-              blockNumber: context.blockNumber + count,
+            pendingCallbacks.push({
+              blockNumber: (context.blockNumber || 0) + count,
               resolve,
             });
           });
         };
 
-        context.upgradeRuntime = async (
-          from: KeyringPair,
-          runtimeName: "moonbase" | "moonriver" | "moonbeam",
-          runtimeVersion: string,
-          waitMigration: boolean = true
-        ) => {
-          return new Promise<number>(async (resolve, reject) => {
-            try {
-              const code = fs
-                .readFileSync(await getRuntimeWasm(runtimeName, runtimeVersion))
-                .toString();
-
-              const existingCode = await context.polkadotApiParaone.rpc.state.getStorage(":code");
-              if (existingCode.toString() == code) {
-                reject(
-                  `Runtime upgrade with same code: ${existingCode.toString().slice(0, 20)} vs ${code
-                    .toString()
-                    .slice(0, 20)}`
-                );
-              }
-
-              let nonce = (
-                await context.polkadotApiParaone.rpc.system.accountNextIndex(from.address)
-              ).toNumber();
-
-              process.stdout.write(
-                `Sending sudo.setCode (${sha256(Buffer.from(code))} [~${Math.floor(
-                  code.length / 1024
-                )} kb])...`
-              );
-              const unsubSetCode = await context.polkadotApiParaone.tx.sudo
-                .sudoUncheckedWeight(
-                  await context.polkadotApiParaone.tx.system.setCodeWithoutChecks(code),
-                  1
-                )
-                .signAndSend(from, { nonce: nonce++ }, async (result) => {
-                  if (result.isInBlock) {
-                    unsubSetCode();
-                    // ==== This is not supported anymore :/ ===
-                    // if (runtimeVersion == "local") {
-                    //   // This is a trick. We set the lastRuntimeUpgrade version to a number lower
-                    //   // at the block right before it gets applied, otherwise it gets reverted to
-                    //   // the original version (not sure why).
-                    //   // This is require when developping and the runtime version hasn't been
-                    //   // increased. As using the same runtime version prevents the migration
-                    //   // to happen
-                    //   await context.waitBlocks(2);
-
-                    //   const lastRuntimeUpgrade =
-                    //     (await context.polkadotApiParaone.query.system.lastRuntimeUpgrade())
-                    //     as any;
-                    //   process.stdout.write(
-                    //     `Overriding on-chain current runtime ${lastRuntimeUpgrade
-                    //       .unwrap()
-                    //       .specVersion.toNumber()} to ${
-                    //       lastRuntimeUpgrade.unwrap().specVersion.toNumber() - 1
-                    //     }`
-                    //   );
-                    //   context.polkadotApiParaone.tx.sudo
-                    //     .sudo(
-                    //       await context.polkadotApiParaone.tx.system.setStorage([
-                    //         [
-                    //           context.polkadotApiParaone.query.system.lastRuntimeUpgrade.key(),
-                    //           `0x${Buffer.from(
-                    //             context.polkadotApiParaone.registry
-                    //               .createType(
-                    //                 "Compact<u32>",
-                    //                 lastRuntimeUpgrade.unwrap().specVersion.toNumber() - 2
-                    //               )
-                    //               .toU8a()
-                    //           ).toString("hex")}${lastRuntimeUpgrade.toHex().slice(6)}`,
-                    //         ],
-                    //       ])
-                    //     )
-                    //     .signAndSend(from, { nonce: nonce++ });
-                    //   process.stdout.write(`✅\n`);
-                    // }
-                  }
-                });
-              process.stdout.write(`✅\n`);
-
-              process.stdout.write(`Waiting to apply new runtime (${chalk.red(`~4min`)})...`);
-              let isInitialVersion = true;
-              const unsub = await context.polkadotApiParaone.rpc.state.subscribeRuntimeVersion(
-                async (version) => {
-                  if (!isInitialVersion) {
-                    const blockNumber = context.blockNumber;
-                    console.log(
-                      `✅ [${version.implName}-${version.specVersion} ${existingCode
-                        .toString()
-                        .slice(0, 6)}...] [#${blockNumber}]`
-                    );
-                    unsub();
-                    const newCode = await context.polkadotApiParaone.rpc.state.getStorage(":code");
-                    if (newCode.toString() != code) {
-                      reject(
-                        `Unexpected new code: ${newCode.toString().slice(0, 20)} vs ${code
-                          .toString()
-                          .slice(0, 20)}`
-                      );
-                    }
-                    if (waitMigration) {
-                      // Wait for next block to have the new runtime applied
-                      await context.waitBlocks(1);
-                    }
-                    resolve(blockNumber);
-                  }
-                  isInitialVersion = false;
-                }
-              );
-            } catch (e) {
-              console.error(`Failed to setCode`);
-              reject(e);
-            }
-          });
-        };
+        context.upgradeRuntime = (preferences) =>
+          upgradeRuntime(context.polkadotApiParaone, preferences);
         context.web3 = await context.createWeb3();
         context.ethers = await context.createEthers();
         debug(
@@ -337,4 +242,74 @@ export function describeParachain(
 
     cb(context);
   });
+}
+
+export interface RuntimeUpgradeVersions {
+  // Version of Moonbase runtime as written in the local source code
+  localVersion: string;
+  // latest version released on Github
+  latestReleasedVersion: string;
+  // Previous version of Moonbase runtime needed to execute the runtime upgrade
+  previousVersion: string;
+  // Does the current source code contain authoring changes
+  hasAuthoringChanges: boolean;
+}
+
+function runOrDefault(cmd: string, def = ""): string {
+  try {
+    return child_process.execSync(cmd).toString().trim();
+  } catch (e) {
+    return def;
+  }
+}
+
+export function retrieveParaVersions() {
+  const localVersion = runOrDefault(
+    `grep 'spec_version: [0-9]*' ../runtime/moonbase/src/lib.rs | grep -o '[0-9]*'`
+  );
+  const localAuthoringVersion = runOrDefault(
+    `grep 'authoring_version: [0-9]*' ../runtime/moonbase/src/lib.rs | grep -o '[0-9]*'`
+  );
+
+  const isAlreadyReleased =
+    runOrDefault(
+      `git tag -l -n 'runtime-[0-9]*' | cut -d' ' -f 1 | cut -d'-' -f 2 | grep "${localVersion}"`
+    ) == localVersion;
+
+  const previousVersion = runOrDefault(
+    `git tag -l -n 'runtime-[0-9]*' | cut -d' ' -f 1 | cut -d'-' -f 2 ` +
+      `| sed '1 i ${localVersion}' | sort -n -r ` +
+      `| uniq | grep -A1 "${localVersion}" | tail -1`
+  );
+  const previousAuthoringVersion = runOrDefault(
+    `git show runtime-${previousVersion}:../runtime/moonbase/src/lib.rs ` +
+      `| grep 'authoring_version: [0-9]*' | grep -o '[0-9]*'`
+  );
+
+  // List authoring_version from git commit since the previous runtime being used
+  // and find if there is a new version.
+  const authoringChanges = runOrDefault(
+    `git grep authoring_version ` +
+      `$(git rev-list runtime-${previousVersion}..HEAD -- ../runtime/moonbase/src/lib.rs) ` +
+      `-- ../runtime/moonbase/src/lib.rs ` +
+      `| grep -v "$(git grep authoring_version runtime-${previousVersion} ` +
+      `-- ../runtime/moonbase/src/lib.rs ` +
+      `| grep -o 'authoring_version:\ *[0-9]')" ` +
+      `| grep -o 'authoring_version:\ *[0-9]*' || exit 0`
+  );
+
+  const hasAuthoringChanges =
+    !!authoringChanges || previousAuthoringVersion != localAuthoringVersion;
+
+  debug(
+    `Using previous runtime ${previousVersion} ` +
+      `(authoring changes: ${hasAuthoringChanges} - ` +
+      `localVersion: ${localVersion} - release: ${isAlreadyReleased})`
+  );
+
+  return {
+    localVersion,
+    previousVersion,
+    hasAuthoringChanges,
+  };
 }

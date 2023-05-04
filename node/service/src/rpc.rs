@@ -24,44 +24,71 @@ use fp_rpc::EthereumRuntimeRPCApi;
 use sp_block_builder::BlockBuilder;
 
 use crate::client::RuntimeApiCollection;
-use cli_opt::EthApi as EthApiCmd;
 use cumulus_primitives_core::ParaId;
 use fc_mapping_sync::{MappingSyncWorker, SyncStrategy};
 use fc_rpc::{
-	EthApi, EthApiServer, EthBlockDataCacheTask, EthFilterApi, EthFilterApiServer, EthPubSubApi,
-	EthPubSubApiServer, EthTask, HexEncodedIdProvider, NetApi, NetApiServer, OverrideHandle,
-	RuntimeApiStorageOverride, SchemaV1Override, SchemaV2Override, SchemaV3Override,
-	StorageOverride, Web3Api, Web3ApiServer,
+	EthBlockDataCacheTask, EthTask, OverrideHandle, RuntimeApiStorageOverride, SchemaV1Override,
+	SchemaV2Override, SchemaV3Override, StorageOverride,
 };
-use fc_rpc_core::types::{FeeHistoryCache, FilterPool};
+use fc_rpc_core::types::{CallRequest, FeeHistoryCache, FilterPool};
 use fp_storage::EthereumStorageSchema;
 use futures::StreamExt;
-use jsonrpc_pubsub::manager::SubscriptionManager;
-use manual_xcm_rpc::{ManualXcm, ManualXcmApi};
+use jsonrpsee::RpcModule;
+use moonbeam_cli_opt::EthApi as EthApiCmd;
 use moonbeam_core_primitives::{Block, Hash};
-use moonbeam_finality_rpc::{MoonbeamFinality, MoonbeamFinalityApi};
-use moonbeam_rpc_txpool::{TxPool, TxPoolServer};
-use pallet_transaction_payment_rpc::{TransactionPayment, TransactionPaymentApi};
 use sc_client_api::{
 	backend::{AuxStore, Backend, StateBackend, StorageProvider},
 	client::BlockchainEvents,
 	BlockOf,
 };
-use sc_consensus_manual_seal::rpc::{EngineCommand, ManualSeal, ManualSealApi};
+use sc_consensus_manual_seal::rpc::{EngineCommand, ManualSeal, ManualSealApiServer};
 use sc_network::NetworkService;
 use sc_rpc::SubscriptionTaskExecutor;
 use sc_rpc_api::DenyUnsafe;
 use sc_service::TaskManager;
 use sc_transaction_pool::{ChainApi, Pool};
 use sc_transaction_pool_api::TransactionPool;
-use sp_api::{HeaderT, ProvideRuntimeApi};
+use sp_api::{CallApiAt, HeaderT, ProvideRuntimeApi};
 use sp_blockchain::{
 	Backend as BlockchainBackend, Error as BlockChainError, HeaderBackend, HeaderMetadata,
 };
 use sp_core::H256;
 use sp_runtime::traits::{BlakeTwo256, Block as BlockT};
 use std::collections::BTreeMap;
-use substrate_frame_rpc_system::{FullSystem, SystemApi};
+
+pub struct MoonbeamEGA;
+
+impl fc_rpc::EstimateGasAdapter for MoonbeamEGA {
+	fn adapt_request(mut request: CallRequest) -> CallRequest {
+		// Redirect any call to batch precompile:
+		// force usage of batchAll method for estimation
+		use sp_core::H160;
+		const BATCH_PRECOMPILE_ADDRESS: H160 = H160(hex_literal::hex!(
+			"0000000000000000000000000000000000000808"
+		));
+		const BATCH_PRECOMPILE_BATCH_ALL_SELECTOR: [u8; 4] = hex_literal::hex!("96e292b8");
+		if request.to == Some(BATCH_PRECOMPILE_ADDRESS) {
+			if let Some(ref mut data) = request.data {
+				if data.0.len() >= 4 {
+					data.0[..4].copy_from_slice(&BATCH_PRECOMPILE_BATCH_ALL_SELECTOR);
+				}
+			}
+		}
+		request
+	}
+}
+
+pub struct MoonbeamEthConfig<C, BE>(std::marker::PhantomData<(C, BE)>);
+
+impl<C, BE> fc_rpc::EthConfig<Block, C> for MoonbeamEthConfig<C, BE>
+where
+	C: sc_client_api::StorageProvider<Block, BE> + Sync + Send + 'static,
+	BE: Backend<Block> + 'static,
+{
+	type EstimateGasAdapter = MoonbeamEGA;
+	type RuntimeStorageOverride =
+		fc_rpc::frontier_backend_client::SystemAccountId20StorageOverride<Block, C, BE>;
+}
 
 /// Full client dependencies.
 pub struct FullDeps<C, P, A: ChainApi, BE> {
@@ -101,30 +128,31 @@ pub struct FullDeps<C, P, A: ChainApi, BE> {
 	pub block_data_cache: Arc<EthBlockDataCacheTask<Block>>,
 }
 
-pub fn overrides_handle<C, BE>(client: Arc<C>) -> Arc<OverrideHandle<Block>>
+pub struct TracingConfig {
+	pub tracing_requesters: crate::rpc::tracing::RpcRequesters,
+	pub trace_filter_max_count: u32,
+}
+
+pub fn overrides_handle<B, C, BE>(client: Arc<C>) -> Arc<OverrideHandle<B>>
 where
-	C: ProvideRuntimeApi<Block> + StorageProvider<Block, BE> + AuxStore,
-	C: HeaderBackend<Block> + HeaderMetadata<Block, Error = BlockChainError>,
-	C: Send + Sync + 'static,
-	C::Api: fp_rpc::EthereumRuntimeRPCApi<Block>,
-	BE: Backend<Block> + 'static,
-	BE::State: StateBackend<BlakeTwo256>,
+	B: BlockT,
+	C: ProvideRuntimeApi<B>,
+	C::Api: EthereumRuntimeRPCApi<B>,
+	C: HeaderBackend<B> + StorageProvider<B, BE> + 'static,
+	BE: Backend<B> + 'static,
 {
 	let mut overrides_map = BTreeMap::new();
 	overrides_map.insert(
 		EthereumStorageSchema::V1,
-		Box::new(SchemaV1Override::new(client.clone()))
-			as Box<dyn StorageOverride<_> + Send + Sync>,
+		Box::new(SchemaV1Override::new(client.clone())) as Box<dyn StorageOverride<_>>,
 	);
 	overrides_map.insert(
 		EthereumStorageSchema::V2,
-		Box::new(SchemaV2Override::new(client.clone()))
-			as Box<dyn StorageOverride<_> + Send + Sync>,
+		Box::new(SchemaV2Override::new(client.clone())) as Box<dyn StorageOverride<_>>,
 	);
 	overrides_map.insert(
 		EthereumStorageSchema::V3,
-		Box::new(SchemaV3Override::new(client.clone()))
-			as Box<dyn StorageOverride<_> + Send + Sync>,
+		Box::new(SchemaV3Override::new(client.clone())) as Box<dyn StorageOverride<_>>,
 	);
 
 	Arc::new(OverrideHandle {
@@ -137,7 +165,8 @@ where
 pub fn create_full<C, P, BE, A>(
 	deps: FullDeps<C, P, A, BE>,
 	subscription_task_executor: SubscriptionTaskExecutor,
-) -> jsonrpc_core::IoHandler<sc_rpc::Metadata>
+	maybe_tracing_config: Option<TracingConfig>,
+) -> Result<RpcModule<()>, Box<dyn std::error::Error + Send + Sync>>
 where
 	BE: Backend<Block> + 'static,
 	BE::State: StateBackend<BlakeTwo256>,
@@ -145,12 +174,25 @@ where
 	C: ProvideRuntimeApi<Block> + StorageProvider<Block, BE> + AuxStore,
 	C: BlockchainEvents<Block>,
 	C: HeaderBackend<Block> + HeaderMetadata<Block, Error = BlockChainError> + 'static,
+	C: CallApiAt<Block>,
 	C: Send + Sync + 'static,
 	A: ChainApi<Block = Block> + 'static,
 	C::Api: RuntimeApiCollection<StateBackend = BE::State>,
 	P: TransactionPool<Block = Block> + 'static,
 {
-	let mut io = jsonrpc_core::IoHandler::default();
+	use fc_rpc::{
+		Eth, EthApiServer, EthFilter, EthFilterApiServer, EthPubSub, EthPubSubApiServer, Net,
+		NetApiServer, Web3, Web3ApiServer,
+	};
+	use manual_xcm_rpc::{ManualXcm, ManualXcmApiServer};
+	use moonbeam_finality_rpc::{MoonbeamFinality, MoonbeamFinalityApiServer};
+	use moonbeam_rpc_debug::{Debug, DebugServer};
+	use moonbeam_rpc_trace::{Trace, TraceServer};
+	use moonbeam_rpc_txpool::{TxPool, TxPoolServer};
+	use pallet_transaction_payment_rpc::{TransactionPayment, TransactionPaymentApiServer};
+	use substrate_frame_rpc_system::{System, SystemApiServer};
+
+	let mut io = RpcModule::new(());
 	let FullDeps {
 		client,
 		pool,
@@ -171,14 +213,9 @@ where
 		block_data_cache,
 	} = deps;
 
-	io.extend_with(SystemApi::to_delegate(FullSystem::new(
-		client.clone(),
-		pool.clone(),
-		deny_unsafe,
-	)));
-	io.extend_with(TransactionPaymentApi::to_delegate(TransactionPayment::new(
-		client.clone(),
-	)));
+	io.merge(System::new(Arc::clone(&client), Arc::clone(&pool), deny_unsafe).into_rpc())?;
+	io.merge(TransactionPayment::new(Arc::clone(&client)).into_rpc())?;
+
 	// TODO: are we supporting signing?
 	let signers = Vec::new();
 
@@ -193,77 +230,103 @@ where
 	}
 	let convert_transaction: Option<Never> = None;
 
-	io.extend_with(EthApiServer::to_delegate(EthApi::new(
-		client.clone(),
-		pool.clone(),
-		graph.clone(),
-		convert_transaction,
-		network.clone(),
-		signers,
-		overrides.clone(),
-		frontier_backend.clone(),
-		is_authority,
-		block_data_cache.clone(),
-		fc_rpc::format::Geth,
-		fee_history_limit,
-		fee_history_cache,
-	)));
+	io.merge(
+		Eth::new(
+			Arc::clone(&client),
+			Arc::clone(&pool),
+			graph.clone(),
+			convert_transaction,
+			Arc::clone(&network),
+			signers,
+			Arc::clone(&overrides),
+			Arc::clone(&frontier_backend),
+			is_authority,
+			Arc::clone(&block_data_cache),
+			fee_history_cache,
+			fee_history_limit,
+			10,
+		)
+		.replace_config::<MoonbeamEthConfig<C, BE>>()
+		.into_rpc(),
+	)?;
 
 	if let Some(filter_pool) = filter_pool {
-		io.extend_with(EthFilterApiServer::to_delegate(EthFilterApi::new(
-			client.clone(),
-			frontier_backend.clone(),
-			filter_pool,
-			500_usize, // max stored filters
-			max_past_logs,
-			block_data_cache.clone(),
-		)));
+		io.merge(
+			EthFilter::new(
+				client.clone(),
+				frontier_backend.clone(),
+				filter_pool,
+				500_usize, // max stored filters
+				max_past_logs,
+				block_data_cache.clone(),
+			)
+			.into_rpc(),
+		)?;
 	}
 
-	io.extend_with(NetApiServer::to_delegate(NetApi::new(
-		client.clone(),
-		network.clone(),
-		true,
-	)));
-	io.extend_with(Web3ApiServer::to_delegate(Web3Api::new(client.clone())));
-	io.extend_with(EthPubSubApiServer::to_delegate(EthPubSubApi::new(
-		pool,
-		client.clone(),
-		network,
-		SubscriptionManager::<HexEncodedIdProvider>::with_id_provider(
-			HexEncodedIdProvider::default(),
-			Arc::new(subscription_task_executor),
-		),
-		overrides,
-	)));
-	if ethapi_cmd.contains(&EthApiCmd::Txpool) {
-		io.extend_with(TxPoolServer::to_delegate(TxPool::new(
+	io.merge(
+		Net::new(
 			Arc::clone(&client),
-			graph,
-		)));
+			network.clone(),
+			// Whether to format the `peer_count` response as Hex (default) or not.
+			true,
+		)
+		.into_rpc(),
+	)?;
+
+	io.merge(Web3::new(Arc::clone(&client)).into_rpc())?;
+	io.merge(
+		EthPubSub::new(
+			pool,
+			Arc::clone(&client),
+			network,
+			subscription_task_executor,
+			overrides,
+		)
+		.into_rpc(),
+	)?;
+	if ethapi_cmd.contains(&EthApiCmd::Txpool) {
+		io.merge(TxPool::new(Arc::clone(&client), graph).into_rpc())?;
 	}
 
-	io.extend_with(MoonbeamFinalityApi::to_delegate(MoonbeamFinality::new(
-		client.clone(),
-		frontier_backend.clone(),
-	)));
+	io.merge(MoonbeamFinality::new(client.clone(), frontier_backend.clone()).into_rpc())?;
 
 	if let Some(command_sink) = command_sink {
-		io.extend_with(
+		io.merge(
 			// We provide the rpc handler with the sending end of the channel to allow the rpc
 			// send EngineCommands to the background block authorship task.
-			ManualSealApi::to_delegate(ManualSeal::new(command_sink)),
-		);
+			ManualSeal::new(command_sink).into_rpc(),
+		)?;
 	};
 
 	if let Some((downward_message_channel, hrmp_message_channel)) = xcm_senders {
-		io.extend_with(ManualXcmApi::to_delegate(ManualXcm {
-			downward_message_channel,
-			hrmp_message_channel,
-		}));
+		io.merge(
+			ManualXcm {
+				downward_message_channel,
+				hrmp_message_channel,
+			}
+			.into_rpc(),
+		)?;
 	}
 
-	io
+	if let Some(tracing_config) = maybe_tracing_config {
+		if let Some(trace_filter_requester) = tracing_config.tracing_requesters.trace {
+			io.merge(
+				Trace::new(
+					client,
+					trace_filter_requester,
+					tracing_config.trace_filter_max_count,
+				)
+				.into_rpc(),
+			)?;
+		}
+
+		if let Some(debug_requester) = tracing_config.tracing_requesters.debug {
+			io.merge(Debug::new(debug_requester).into_rpc())?;
+		}
+	}
+
+	Ok(io)
 }
 
 pub struct SpawnTasksParams<'a, B: BlockT, C, BE> {
@@ -324,15 +387,6 @@ where
 			),
 		);
 	}
-
-	params.task_manager.spawn_essential_handle().spawn(
-		"frontier-schema-cache-task",
-		Some("frontier"),
-		EthTask::ethereum_schema_cache_task(
-			Arc::clone(&params.client),
-			Arc::clone(&params.frontier_backend),
-		),
-	);
 
 	// Spawn Frontier FeeHistory cache maintenance task.
 	params.task_manager.spawn_essential_handle().spawn(

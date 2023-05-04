@@ -1,5 +1,8 @@
 # Functional testing for Moonbeam
 
+:information_source: This is the location of all the typescript based tests for Moonbeam/Moonriver. 
+In the future this will be replaced by the `/test/` folder which is using the [Moonwall](https://github.com/Moonsong-Labs/moonwall) framework.
+
 This folder contains a set of functional tests designed for Moonbeam network.
 
 It is written in typescript, using Mocha/Chai as Test framework.
@@ -12,7 +15,6 @@ Each group will start a dev service with the
 ## Test categories
 
 - `test`: Tests expected to run by spawning a new dev node (~1-2 minutes)
-- `para-test`: Tests spawning a complete relay+para network (~5-20 minutes)
 - `smoke-test`: Tests veryfing the data (consistency) on an existing chain (~5-20 minutes)
 
 ## Installation
@@ -65,36 +67,6 @@ You can debug specific smoke test with `debug` library using prefix `smoke:*`:
 DEBUG=smoke:* WSS_URL=wss://localhost:9944 npm run smoke-test
 ```
 
-# Parachain test
-
-Either use script or use parachain testing framework.
-
-## Using Script
-
-You can directly launch a parachain test with this script.
-It takes care of getting the binary relay node and spawns 2 validators and 2 collators.
-
-```bash
-scripts/run-para-test-single.sh moonriver/test-balance-genesis.ts
-```
-
-## Using parachain testing framework
-
-### Requirements
-
-First make sure you have compiled moonbeam with `cargo build --release` and also copied
-the polkadot executable (built with `cargo build --release`) into the same folder as
-the moonbeam executable: `./target/release`
-(`cp ./target/release/polkadot ../moonbeam/target/release/polkadot`).
-
-Also don't forget to build `moonbeam-types-bundle` with `yarn run build` in that folder.
-
-### Execution
-
-Then run `npm run para-test-no-ci` to run the parachain tests in the para-tests-no-ci folder.
-
-This script is prefixed with `DEBUG=test:substrateEvents ` to log events during the tests.
-
 ## Write Tests
 
 ### Add a new contract
@@ -124,6 +96,15 @@ Before debugging, you need to build the node with debug symbols with command
 `RUSTFLAGS=-g cargo build --release` (available as a VSCode task). Then go in the **Debug** tab in
 the left bar of VSCode and make sure **Launch Moonbeam Node (Linux)** is selected in the top
 dropdown. **Build & Launch Moonbeam Node (Linux)** will trigger the build before launching the node.
+
+Depending on what exactly you're attempting to debug, you may need other build configurations. The
+most straightforward is a debug build (omit `--release`), but this will produce a binary which is
+extremely large and performs very poorly. A `--release` build can provide some middle ground, and
+you may need some or all of:
+
+- `-g` (alias for `-C debuginfo=2`, the max)
+- `-C force-frame-pointers=yes`
+- `-Copt-level=0` (or 1, etc. This one has a big impact)
 
 To launch the debug session click on the green "play" arrow next to the dropdown. It will take some
 time before the node starts, but the terminal containing the node output will appear when it is
@@ -161,3 +142,44 @@ are the ports used by the debug node.
 A VSCode test allow to quickly run the `test-single` test in debug mode. To run another test,
 change the command in the `package.json`. Note that you should restart the node after running
 one test file.
+
+## Fork Tests
+
+Those tests are intended to run using an exported state from an existing network.  
+They require to specify the exported state, the runtime name and the parachain id.  
+Also the exported state needs to be modified using the state-modifier.ts script.
+
+> N.B. The most uptodate way of forking live chain state can be found in our tools-repo: https://github.com/PureStake/moonbeam-tools
+
+### End to end script (automated)
+
+You can run the full process using the docker image:
+
+```
+docker run -e GIT_TAG=perm-runtime-1605 -e NETWORK=moonriver -e RUNTIME_NAME=moonriver purestake/moonbeam-fork-tests:0.0.5
+```
+
+or locally (for debugging pruposes) with the script:
+
+```
+ROOT_FOLDER=/tmp/moonbeam-states GIT_TAG=perm-runtime-1604 NETWORK=moonbase-alpha RUNTIME_NAME=moobase ./scripts/run-fork-test.sh
+```
+
+Where `ROOT_FOLDER` should be an empty folder
+
+
+### Starting the node separately
+
+If you want to inspect the forkned network or keep it running after the tests
+
+```
+PARA_ID=2004 PORT_PREFIX=51 ./node_modules/.bin/ts-node spawn-fork-node.ts
+PARA_ID=1000 PORT_PREFIX=51 ./node_modules/.bin/ts-node spawn-fork-node.ts
+PARA_ID=2023 PORT_PREFIX=51 ./node_modules/.bin/ts-node spawn-fork-node.ts
+```
+
+### Generating moonbeam-fork-test image
+
+```
+docker build ./scripts -t purestake/moonbeam-fork-tests:0.0.5 -f docker/moonbeam-fork-tests.Dockerfile
+```

@@ -17,9 +17,9 @@
 extern crate alloc;
 
 use alloc::vec::Vec;
-use codec::{Decode, Encode};
 use ethereum_types::{H160, H256, U256};
 use evm::ExitReason;
+use parity_scale_codec::{Decode, Encode};
 
 #[derive(Clone, Debug, Encode, Decode, PartialEq, Eq)]
 pub struct Transfer {
@@ -128,6 +128,14 @@ pub enum EvmEvent {
 		gas_limit: u64,
 		address: H160,
 	},
+	PrecompileSubcall {
+		code_address: H160,
+		transfer: Option<Transfer>,
+		input: Vec<u8>,
+		target_gas: Option<u64>,
+		is_static: bool,
+		context: super::Context,
+	},
 }
 
 #[cfg(feature = "evm-tracing")]
@@ -224,6 +232,25 @@ impl<'a> From<evm::tracing::Event<'a>> for EvmEvent {
 				salt,
 				gas_limit,
 				address,
+			},
+			evm::tracing::Event::PrecompileSubcall {
+				code_address,
+				transfer,
+				input,
+				target_gas,
+				is_static,
+				context,
+			} => Self::PrecompileSubcall {
+				code_address,
+				transfer: if let Some(transfer) = transfer {
+					Some(transfer.clone().into())
+				} else {
+					None
+				},
+				input: input.to_vec(),
+				target_gas,
+				is_static,
+				context: context.clone().into(),
 			},
 		}
 	}

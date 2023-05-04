@@ -24,15 +24,13 @@ use serde::{Deserialize, Serialize};
 use sp_runtime::PerThing;
 use sp_runtime::{Perbill, RuntimeDebug};
 use substrate_fixed::transcendental::pow as floatpow;
-use substrate_fixed::types::{I32F32, I64F64};
+use substrate_fixed::types::I64F64;
 
-const SECONDS_PER_YEAR: u32 = 31557600;
-const SECONDS_PER_BLOCK: u32 = 12;
-pub const BLOCKS_PER_YEAR: u32 = SECONDS_PER_YEAR / SECONDS_PER_BLOCK;
-
-fn rounds_per_year<T: Config>() -> u32 {
-	let blocks_per_round = <Pallet<T>>::round().length;
-	BLOCKS_PER_YEAR / blocks_per_round
+fn rounds_per_year(
+	blocks_per_round: u32,
+	blocks_per_year: u32,
+) -> u32 {
+	blocks_per_year / blocks_per_round
 }
 
 #[cfg_attr(feature = "std", derive(Serialize, Deserialize))]
@@ -66,10 +64,10 @@ pub fn perbill_annual_to_perbill_round(
 	annual: Range<Perbill>,
 	rounds_per_year: u32,
 ) -> Range<Perbill> {
-	let exponent = I32F32::from_num(1) / I32F32::from_num(rounds_per_year);
+	let exponent = I64F64::from_num(1) / I64F64::from_num(rounds_per_year);
 	let annual_to_round = |annual: Perbill| -> Perbill {
-		let x = I32F32::from_num(annual.deconstruct()) / I32F32::from_num(Perbill::ACCURACY);
-		let y: I64F64 = floatpow(I32F32::from_num(1) + x, exponent)
+		let x = I64F64::from_num(annual.deconstruct()) / I64F64::from_num(Perbill::ACCURACY);
+		let y: I64F64 = floatpow(I64F64::from_num(1) + x, exponent)
 			.expect("Cannot overflow since rounds_per_year is u32 so worst case 0; QED");
 		Perbill::from_parts(
 			((y - I64F64::from_num(1)) * I64F64::from_num(Perbill::ACCURACY))
@@ -84,8 +82,12 @@ pub fn perbill_annual_to_perbill_round(
 	}
 }
 /// Convert annual inflation rate range to round inflation range
-pub fn annual_to_round<T: Config>(annual: Range<Perbill>) -> Range<Perbill> {
-	let periods = rounds_per_year::<T>();
+pub fn annual_to_round(
+	annual: Range<Perbill>,
+	blocks_per_round: u32,
+	blocks_per_year: u32,
+) -> Range<Perbill> {
+	let periods = rounds_per_year(blocks_per_round, blocks_per_year);
 	perbill_annual_to_perbill_round(annual, periods)
 }
 
@@ -102,6 +104,10 @@ pub fn round_issuance_range<T: Config>(round: Range<Perbill>) -> Range<BalanceOf
 #[cfg_attr(feature = "std", derive(Serialize, Deserialize))]
 #[derive(Eq, PartialEq, Clone, Encode, Decode, Default, RuntimeDebug, TypeInfo)]
 pub struct InflationInfo<Balance> {
+	/// blocks in a round
+	pub blocks_per_round: u32,
+	/// How many blocks are in a year.
+	pub blocks_per_year: u32,
 	/// Staking expectations
 	pub expect: Range<Balance>,
 	/// Annual inflation range
@@ -111,24 +117,39 @@ pub struct InflationInfo<Balance> {
 }
 
 impl<Balance> InflationInfo<Balance> {
-	pub fn new<T: Config>(
+	pub fn new(
+		blocks_per_round: u32,
+		blocks_per_year: u32,
 		annual: Range<Perbill>,
 		expect: Range<Balance>,
 	) -> InflationInfo<Balance> {
+		let round =  annual_to_round(
+			annual,
+			blocks_per_round,
+			blocks_per_year,
+		);
 		InflationInfo {
+			blocks_per_year,
+			blocks_per_round,
 			expect,
 			annual,
-			round: annual_to_round::<T>(annual),
+			round,
 		}
 	}
 	/// Set round inflation range according to input annual inflation range
-	pub fn set_round_from_annual<T: Config>(&mut self, new: Range<Perbill>) {
-		self.round = annual_to_round::<T>(new);
+	pub fn set_round_from_annual(&mut self, new: Range<Perbill>, blocks_per_round: u32) {
+		self.blocks_per_round = blocks_per_round;
+		self.round = annual_to_round(
+			new,
+			self.blocks_per_round,
+			self.blocks_per_year,
+		);
 	}
 	/// Reset round inflation rate based on changes to round length
 	pub fn reset_round(&mut self, new_length: u32) {
-		let periods = BLOCKS_PER_YEAR / new_length;
-		self.round = perbill_annual_to_perbill_round(self.annual, periods);
+		self.blocks_per_round = new_length;
+		let rounds_per_year = self.blocks_per_year / self.blocks_per_round;
+		self.round = perbill_annual_to_perbill_round(self.annual, rounds_per_year);
 	}
 	/// Set staking expectations
 	pub fn set_expectations(&mut self, expect: Range<Balance>) {
@@ -210,5 +231,19 @@ mod tests {
 			expected_round_schedule,
 			mock_round_issuance_range(10_000_000, mock_annual_to_round(schedule, 8766))
 		);
+	}
+	#[test]
+	fn inflation_does_not_panic_at_round_number_limit() {
+		let schedule = Range {
+			min: Perbill::from_percent(100),
+			ideal: Perbill::from_percent(100),
+			max: Perbill::from_percent(100),
+		};
+		mock_round_issuance_range(u32::MAX.into(), mock_annual_to_round(schedule, u32::MAX));
+		mock_round_issuance_range(u64::MAX.into(), mock_annual_to_round(schedule, u32::MAX));
+		mock_round_issuance_range(u128::MAX.into(), mock_annual_to_round(schedule, u32::MAX));
+		mock_round_issuance_range(u32::MAX.into(), mock_annual_to_round(schedule, 1));
+		mock_round_issuance_range(u64::MAX.into(), mock_annual_to_round(schedule, 1));
+		mock_round_issuance_range(u128::MAX.into(), mock_annual_to_round(schedule, 1));
 	}
 }
