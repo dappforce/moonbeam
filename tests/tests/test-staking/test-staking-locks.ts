@@ -8,7 +8,13 @@ import {
   execTechnicalCommitteeProposal,
   notePreimage,
 } from "../../util/governance";
-import { GLMR, MIN_GLMR_STAKING, MIN_GLMR_DELEGATOR } from "../../util/constants";
+import {
+  MICROGLMR,
+  MILLIGLMR,
+  GLMR,
+  MIN_GLMR_STAKING,
+  MIN_GLMR_DELEGATOR,
+} from "../../util/constants";
 import { describeDevMoonbeam, DevTestContext } from "../../util/setup-dev-tests";
 import { KeyringPair } from "@polkadot/keyring/types";
 import { expectOk } from "../../util/expect";
@@ -131,14 +137,16 @@ describeDevMoonbeam("Staking - Locks - democracy vote", (context) => {
       )
     );
 
-    const proposalHash = await notePreimage(
-      context,
-      context.polkadotApi.tx.parachainStaking.setParachainBondAccount(alith.address),
-      alith
-    );
+    const proposal = context.polkadotApi.tx.parachainStaking.setParachainBondAccount(alith.address);
+    const proposalHash = await notePreimage(context, proposal, alith);
     await execCouncilProposal(
       context,
-      context.polkadotApi.tx.democracy.externalProposeMajority(proposalHash)
+      context.polkadotApi.tx.democracy.externalProposeMajority({
+        LookUp: {
+          hash: proposalHash,
+          len: proposal.encodedLength,
+        },
+      } as any)
     );
     await execTechnicalCommitteeProposal(
       context,
@@ -198,9 +206,6 @@ describeDevMoonbeam("Staking - Locks - execute revoke", (context) => {
   before("setup account balance", async function () {
     await expectOk(
       context.createBlock([
-        context.polkadotApi.tx.sudo.sudo(
-          context.polkadotApi.tx.parachainStaking.setBlocksPerRound(5)
-        ),
         context.polkadotApi.tx.balances.transfer(
           randomAccount.address,
           MIN_GLMR_DELEGATOR + 1n * GLMR
@@ -256,9 +261,6 @@ describeDevMoonbeam("Staking - Locks - multiple delegations single revoke", (con
 
     await expectOk(
       context.createBlock([
-        context.polkadotApi.tx.sudo.sudo(
-          context.polkadotApi.tx.parachainStaking.setBlocksPerRound(5)
-        ),
         context.polkadotApi.tx.balances.transfer(randomAccount.address, 2n * MIN_GLMR_STAKING),
         context.polkadotApi.tx.parachainStaking
           .joinCandidates(MIN_GLMR_STAKING, 1)
@@ -447,13 +449,12 @@ describeDevMoonbeam("Staking - Locks - bottom delegator removed", (context) => {
   before("setup candidate & delegations", async function () {
     this.timeout(20000);
 
-    // Create the delegators to fill the lists
-    additionalDelegators = new Array(
+    const maxDelegations =
       context.polkadotApi.consts.parachainStaking.maxTopDelegationsPerCandidate.toNumber() +
-        context.polkadotApi.consts.parachainStaking.maxBottomDelegationsPerCandidate.toNumber()
-    )
-      .fill(0)
-      .map(() => generateKeyringPair());
+      context.polkadotApi.consts.parachainStaking.maxBottomDelegationsPerCandidate.toNumber();
+
+    // Create the delegators to fill the lists
+    additionalDelegators = new Array(maxDelegations).fill(0).map(() => generateKeyringPair());
 
     await expectOk(
       context.createBlock(
@@ -482,20 +483,29 @@ describeDevMoonbeam("Staking - Locks - bottom delegator removed", (context) => {
       `Unexpected number of locks: ${locks.map((l) => l.id.toHuman().toString()).join(` - `)}`
     );
 
-    await expectOk(
-      context.createBlock(
-        [...additionalDelegators].map((account, i) =>
-          context.polkadotApi.tx.parachainStaking
-            .delegate(alith.address, MIN_GLMR_DELEGATOR + GLMR, i + 1, 1)
-            .signAsync(account)
-        )
-      )
+    const txns = await [...additionalDelegators].map((account, i) =>
+      context.polkadotApi.tx.parachainStaking
+        .delegate(alith.address, MIN_GLMR_DELEGATOR + GLMR, additionalDelegators.length + 1, 1)
+        .signAsync(account)
     );
+
+    // this can no longer fit in one block
+    const batchSize = 100;
+    for (let i = 0; i < txns.length; i += batchSize) {
+      await expectOk(context.createBlock(txns.slice(i, i + batchSize)));
+    }
+
+    const alithCandidateInfo = (
+      (await context.polkadotApi.query.parachainStaking.candidateInfo(alith.address)) as any
+    ).unwrap();
+    expect(alithCandidateInfo.delegationCount.toNumber()).to.equal(additionalDelegators.length);
 
     const newLocks = await context.polkadotApi.query.balances.locks(randomAccount.address);
     expect(newLocks.length).to.be.equal(
       0,
-      "Lock should have been removed after getting removed from bottom delegations"
+      `Unexpected number of locks: ${newLocks
+        .map((l) => `${l.id.toHuman().toString()}: ${l.amount.toHuman().toString()}`)
+        .join(` - `)}`
     );
   });
 });
@@ -506,6 +516,11 @@ describeDevMoonbeam("Staking - Locks - bottom and top delegations", (context) =>
 
   before("setup candidate & delegations", async function () {
     this.timeout(20000);
+    const numBottomDelegations =
+      await context.polkadotApi.consts.parachainStaking.maxBottomDelegationsPerCandidate.toNumber();
+
+    const numTopDelegations =
+      await context.polkadotApi.consts.parachainStaking.maxTopDelegationsPerCandidate.toNumber();
 
     // Create the delegators to fill the lists
     bottomDelegators = new Array(
@@ -523,7 +538,7 @@ describeDevMoonbeam("Staking - Locks - bottom and top delegations", (context) =>
       context.createBlock(
         [...bottomDelegators, ...topDelegators].map((account, i) =>
           context.polkadotApi.tx.balances
-            .transfer(account.address, MIN_GLMR_DELEGATOR + 2n * GLMR)
+            .transfer(account.address, MIN_GLMR_DELEGATOR + 20n * GLMR)
             .signAsync(alith, { nonce: i })
         )
       )
@@ -533,34 +548,61 @@ describeDevMoonbeam("Staking - Locks - bottom and top delegations", (context) =>
   it("should be set for bottom and top list delegators", async function () {
     await expectOk(
       context.createBlock(
-        [...topDelegators].map((account, i) =>
-          context.polkadotApi.tx.parachainStaking
+        [...topDelegators].map((account, i) => {
+          // add a tip such that the delegation ordering will be preserved, e.g. the first txns sent
+          // will have the highest tip
+          let tip = BigInt(topDelegators.length - i + 1) * MILLIGLMR;
+          return context.polkadotApi.tx.parachainStaking
             .delegate(alith.address, MIN_GLMR_DELEGATOR + 1n * GLMR, i + 1, 1)
-            .signAsync(account)
-        )
+            .signAsync(account, { tip });
+        })
       )
     );
+
+    // allow more block(s) for txns to be processed...
+    // note: this only seems necessary when a tip is added, otherwise all 300 txns make it into a
+    // single block. A tip is necessary if the txns are not otherwise executed in order of
+    // submission, which is highly dependent on txpool prioritization logic.
+    // TODO: it would be good to diagnose this further: why does adding a tip appear to reduce the
+    // number of txns included?
+    const numBlocksToWait = 1;
+    let numBlocksWaited = 0;
+    while (numBlocksWaited < numBlocksToWait) {
+      await context.createBlock();
+      const topLocks = await context.polkadotApi.query.balances.locks.multi(
+        topDelegators.map((delegator) => delegator.address)
+      );
+      let numDelegatorLocks = topLocks.filter((lockSet) =>
+        lockSet.find((lock) => lock.id.toHuman().toString() == "stkngdel")
+      ).length;
+
+      if (numDelegatorLocks < topDelegators.length) {
+        numBlocksWaited += 1;
+        expect(numBlocksWaited).to.be.lt(
+          numBlocksToWait,
+          "Top delegation extrinsics not included in time"
+        );
+      } else {
+        expect(numDelegatorLocks).to.eq(topDelegators.length, "More delegations than expected");
+        break;
+      }
+    }
+
     await expectOk(
       context.createBlock(
-        [...bottomDelegators].map((account, i) =>
-          context.polkadotApi.tx.parachainStaking
+        [...bottomDelegators].map((account, i) => {
+          // add a tip such that the delegation ordering will be preserved, e.g. the first txns sent
+          // will have the highest tip
+          let tip = BigInt(topDelegators.length + (bottomDelegators.length - i) + 1) * MILLIGLMR;
+          return context.polkadotApi.tx.parachainStaking
             .delegate(alith.address, MIN_GLMR_DELEGATOR, topDelegators.length + i + 1, 1)
-            .signAsync(account)
-        )
+            .signAsync(account, { tip });
+        })
       )
     );
 
-    const topLocks = await context.polkadotApi.query.balances.locks.multi(
-      topDelegators.map((delegator) => delegator.address)
-    );
-    expect(
-      topLocks.filter((lockSet) =>
-        lockSet.find((lock) => lock.id.toHuman().toString() == "stkngdel")
-      ).length
-    ).to.equal(
-      context.polkadotApi.consts.parachainStaking.maxTopDelegationsPerCandidate.toNumber()
-    );
-
+    // note that we don't need to wait for further blocks here because bottom delegations is much
+    // smaller than top delegations, so all txns reliably fit within one block.
     const bottomLocks = await context.polkadotApi.query.balances.locks.multi(
       bottomDelegators.map((delegator) => delegator.address)
     );
@@ -571,100 +613,5 @@ describeDevMoonbeam("Staking - Locks - bottom and top delegations", (context) =>
     ).to.equal(
       context.polkadotApi.consts.parachainStaking.maxBottomDelegationsPerCandidate.toNumber()
     );
-  });
-});
-
-describeDevMoonbeam("Staking - Locks - hotfix migrate delegator max address count", (context) => {
-  it("should error", async function () {
-    const accountIds = Array<string>(100).fill(alith.address);
-
-    const result = (
-      await context.createBlock(
-        (context.polkadotApi.tx.parachainStaking as any)
-          .hotfixMigrateDelegatorsFromReserveToLocks(accountIds)
-          .signAsync(baltathar)
-      )
-    ).result as ExtrinsicCreation;
-
-    expect(result.successful).to.be.false;
-    expect(result.error.name).to.equal("Other");
-  });
-});
-
-describeDevMoonbeam("Staking - Locks - hotfix migrate collator max address count", (context) => {
-  it("should error", async function () {
-    const accountIds = Array<string>(100).fill(alith.address);
-
-    const result = (
-      await context.createBlock(
-        (context.polkadotApi.tx.parachainStaking as any)
-          .hotfixMigrateCollatorsFromReserveToLocks(accountIds)
-          .signAsync(baltathar)
-      )
-    ).result as ExtrinsicCreation;
-
-    expect(result.successful).to.be.false;
-    expect(result.error.name).to.equal("Other");
-  });
-});
-
-describeDevMoonbeam("Staking - Locks - hotfix migrate delegators fees", (context) => {
-  async function getFeesForHotfixExtrinsicWithNumDelegators(numDelegators: number) {
-    let initialBalance = (
-      await context.polkadotApi.query.system.account(baltathar.address)
-    ).data.free.toBigInt();
-
-    let accountIds = Array<string>(numDelegators).fill(alith.address);
-
-    await expectOk(
-      context.createBlock(
-        (context.polkadotApi.tx.parachainStaking as any)
-          .hotfixMigrateDelegatorsFromReserveToLocks(accountIds)
-          .signAsync(baltathar)
-      )
-    );
-
-    let afterBalance = (
-      await context.polkadotApi.query.system.account(baltathar.address)
-    ).data.free.toBigInt();
-
-    const fee = initialBalance - afterBalance;
-    return fee;
-  }
-
-  it("should have high fees", async function () {
-    expect((await getFeesForHotfixExtrinsicWithNumDelegators(1)) > 25_000_000_000_000n).to.be.true;
-    expect((await getFeesForHotfixExtrinsicWithNumDelegators(99)) > 2_000_000_000_000_000n).to.true;
-  });
-});
-
-describeDevMoonbeam("Staking - Locks - hotfix migrate collators", (context) => {
-  async function getFeesForHotfixExtrinsicWithNumCollators(numCollators: number) {
-    let initialBalance = (
-      await context.polkadotApi.query.system.account(baltathar.address)
-    ).data.free.toBigInt();
-
-    let accountIds = Array<string>(numCollators).fill(alith.address);
-
-    await expectOk(
-      context.createBlock(
-        (context.polkadotApi.tx.parachainStaking as any)
-          .hotfixMigrateCollatorsFromReserveToLocks(accountIds)
-          .signAsync(baltathar)
-      )
-    );
-
-    let afterBalance = (
-      await context.polkadotApi.query.system.account(baltathar.address)
-    ).data.free.toBigInt();
-
-    const fee = initialBalance - afterBalance;
-    return fee;
-  }
-
-  it("should have high fees", async function () {
-    expect((await getFeesForHotfixExtrinsicWithNumCollators(1)) > 25_000_000_000_000n).to.be.true;
-    expect((await getFeesForHotfixExtrinsicWithNumCollators(99)) > 2_000_000_000_000_000n).to.be
-      .true;
   });
 });

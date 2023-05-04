@@ -1,18 +1,18 @@
 import "@moonbeam-network/api-augment";
 import { ApiDecoration } from "@polkadot/api/types";
 import { bool, Option, u32 } from "@polkadot/types-codec";
-import type { PalletMoonbeamOrbitersCollatorPoolInfo } from "@polkadot/types/lookup";
+import type {
+  FrameSystemEventRecord,
+  PalletMoonbeamOrbitersCollatorPoolInfo,
+} from "@polkadot/types/lookup";
 import type { AccountId20 } from "@polkadot/types/interfaces";
-
 import { expect } from "chai";
+import { sortObjectByKeys } from "../util/common";
 import { describeSmokeSuite } from "../util/setup-smoke-tests";
 import { StorageKey } from "@polkadot/types";
 const debug = require("debug")("smoke:orbiter");
 
-const wssUrl = process.env.WSS_URL || null;
-const relayWssUrl = process.env.RELAY_WSS_URL || null;
-
-describeSmokeSuite(`Verify orbiters`, { wssUrl, relayWssUrl }, (context) => {
+describeSmokeSuite("S1400", `Verify orbiters`, (context, testIt) => {
   let atBlockNumber: number = 0;
   let apiAt: ApiDecoration<"promise"> = null;
   let collatorsPools: [
@@ -21,10 +21,16 @@ describeSmokeSuite(`Verify orbiters`, { wssUrl, relayWssUrl }, (context) => {
   ][] = null;
   let registeredOrbiters: [StorageKey<[AccountId20]>, Option<bool>][] = null;
   let counterForCollatorsPool: u32 = null;
+  let currentRound: number = null;
+  let orbiterPerRound: [StorageKey<[u32, AccountId20]>, Option<AccountId20>][] = null;
+  let events: FrameSystemEventRecord[] = null;
+  let specVersion: number = 0;
 
   before("Setup api & retrieve data", async function () {
-    const runtimeVersion = await context.polkadotApi.runtimeVersion.specVersion.toNumber();
-    atBlockNumber = (await context.polkadotApi.rpc.chain.getHeader()).number.toNumber();
+    const runtimeVersion = context.polkadotApi.runtimeVersion.specVersion.toNumber();
+    atBlockNumber = process.env.BLOCK_NUMBER
+      ? parseInt(process.env.BLOCK_NUMBER)
+      : (await context.polkadotApi.rpc.chain.getHeader()).number.toNumber();
     apiAt = await context.polkadotApi.at(
       await context.polkadotApi.rpc.chain.getBlockHash(atBlockNumber)
     );
@@ -32,9 +38,13 @@ describeSmokeSuite(`Verify orbiters`, { wssUrl, relayWssUrl }, (context) => {
     registeredOrbiters =
       runtimeVersion >= 1605 ? await apiAt.query.moonbeamOrbiters.registeredOrbiter.entries() : [];
     counterForCollatorsPool = await apiAt.query.moonbeamOrbiters.counterForCollatorsPool();
+    currentRound = (await apiAt.query.parachainStaking.round()).current.toNumber();
+    orbiterPerRound = await apiAt.query.moonbeamOrbiters.orbiterPerRound.entries();
+    events = await apiAt.query.system.events();
+    specVersion = (await apiAt.query.system.lastRuntimeUpgrade()).unwrap().specVersion.toNumber();
   });
 
-  it("should have reserved tokens", async function () {
+  testIt("C100", `should have reserved tokens`, async function () {
     const reserves = await apiAt.query.balances.reserves.entries();
     const orbiterReserves = reserves
       .map((reserveSet) =>
@@ -62,7 +72,7 @@ describeSmokeSuite(`Verify orbiters`, { wssUrl, relayWssUrl }, (context) => {
     debug(`Verified ${orbiterRegisteredAccounts.length} orbiter reserves`);
   });
 
-  it("should be registered if in a pool", async function () {
+  testIt("C200", `should be registered if in a pool`, async function () {
     for (const orbiterPool of collatorsPools) {
       const collator = `0x${orbiterPool[0].toHex().slice(-40)}`;
       const pool = orbiterPool[1].unwrap();
@@ -97,11 +107,81 @@ describeSmokeSuite(`Verify orbiters`, { wssUrl, relayWssUrl }, (context) => {
     debug(`Verified ${collatorsPools.length} orbiter pools`);
   });
 
-  it("should not have more pool than the max allowed", async function () {
+  testIt("C300", `should not have more pool than the max allowed`, async function () {
     expect(collatorsPools.length, `Orbiter pool is too big`).to.be.at.most(
       counterForCollatorsPool.toNumber()
     );
 
     debug(`Verified orbiter pools size`);
+  });
+
+  testIt("C400", `should have matching rewards`, async function () {
+    if (specVersion >= 1800) {
+      let rotatePeriod: number = (
+        (await apiAt.consts.moonbeamOrbiters.rotatePeriod) as any
+      ).toNumber();
+
+      // Get parent collators
+      const parentCollators = new Set();
+      collatorsPools.forEach((o) => parentCollators.add(o[0].args[0].toHex()));
+
+      // Get collators rewards
+      let collatorRewards = {};
+      for (const { event, phase } of events) {
+        if (
+          phase.isInitialization &&
+          event.section == "parachainStaking" &&
+          event.method == "Rewarded"
+        ) {
+          const data = event.data as any;
+          const account = data.account.toHex();
+          const rewards = data.rewards.toBigInt();
+          if (parentCollators.has(account)) {
+            collatorRewards[account] = rewards;
+          }
+        }
+      }
+
+      //console.log(collatorRewards);
+
+      if (Object.keys(collatorRewards).length > 0) {
+        // Compute expected reward for each orbiter
+        const lastRotateRound = currentRound - (currentRound % rotatePeriod);
+        let expectedOrbiterRewards = {};
+        orbiterPerRound.forEach((o) => {
+          let [round, collator] = o[0].args;
+          let orbiter = o[1];
+
+          if (round.toNumber() == lastRotateRound && collatorRewards[collator.toHex()]) {
+            expectedOrbiterRewards[orbiter.unwrap().toHex()] = collatorRewards[collator.toHex()];
+          }
+        });
+        const sortedExpectedOrbiterRewards = sortObjectByKeys(expectedOrbiterRewards);
+
+        // Verify orbiters rewards
+        let actualOrbiterRewards = {};
+        for (const { event, phase } of events) {
+          if (
+            phase.isInitialization &&
+            event.section == "MoonbeamOrbiters" &&
+            event.method == "OrbiterRewarded"
+          ) {
+            const data = event.data as any;
+            const orbiter = data.account.toHex();
+            const rewards = data.rewards.toBigInt();
+            actualOrbiterRewards[orbiter] = rewards;
+          }
+        }
+        const sortedActualOrbiterRewards = sortObjectByKeys(actualOrbiterRewards);
+
+        //console.log(sortedExpectedOrbiterRewards);
+        //console.log(sortedActualOrbiterRewards);
+
+        expect(
+          sortedActualOrbiterRewards,
+          `Orbiter rewards doesn't match expectation for block #${atBlockNumber}.`
+        ).to.deep.equal(sortedExpectedOrbiterRewards);
+      }
+    }
   });
 });

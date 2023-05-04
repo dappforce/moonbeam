@@ -15,37 +15,50 @@
 // along with Moonbeam.  If not, see <http://www.gnu.org/licenses/>.
 
 use crate::mock::{
-	events, CurrencyId, CurrencyIdToMultiLocation, ExtBuilder, PrecompilesValue, Runtime,
-	TestAccount::*, TestPrecompiles,
+	events, AssetAccount, CurrencyId, CurrencyIdToMultiLocation, ExtBuilder, PCall, Precompiles,
+	PrecompilesValue, Runtime, SelfReserveAccount,
 };
-use crate::{Action, Currency, EvmMultiAsset};
+use crate::{Currency, EvmMultiAsset};
 use orml_xtokens::Event as XtokensEvent;
 use precompile_utils::{prelude::*, testing::*};
 use sp_core::U256;
 use sp_runtime::traits::Convert;
 use xcm::latest::{
-	AssetId, Fungibility, Junction, Junctions, MultiAsset, MultiAssets, MultiLocation, NetworkId,
+	AssetId, Fungibility, Junction, Junctions, MultiAsset, MultiAssets, MultiLocation,
 };
 
-fn precompiles() -> TestPrecompiles<Runtime> {
+fn precompiles() -> Precompiles<Runtime> {
 	PrecompilesValue::get()
 }
 
 #[test]
 fn test_selector_enum() {
-	assert_eq!(Action::Transfer as u32, 0xb9f813ff);
-	assert_eq!(Action::TransferMultiAsset as u32, 0xb38c60fa);
-	assert_eq!(Action::TransferMultiCurrencies as u32, 0x8a362d5c);
-	assert_eq!(Action::TransferWithFee as u32, 0x94f69115);
-	assert_eq!(Action::TransferMultiAssetWithFee as u32, 0x89a570fc);
+	assert!(PCall::transfer_selectors().contains(&0xb9f813ff));
+	assert!(PCall::transfer_multiasset_selectors().contains(&0xb4f76f96));
+	assert!(PCall::transfer_multi_currencies_selectors().contains(&0xab946323));
+	assert!(PCall::transfer_with_fee_selectors().contains(&0x3e506ef0));
+	assert!(PCall::transfer_multiasset_with_fee_selectors().contains(&0x150c016a));
+}
+
+#[test]
+fn modifiers() {
+	ExtBuilder::default().build().execute_with(|| {
+		let mut tester = PrecompilesModifierTester::new(precompiles(), Alice, Precompile1);
+
+		tester.test_default_modifier(PCall::transfer_selectors());
+		tester.test_default_modifier(PCall::transfer_multiasset_selectors());
+		tester.test_default_modifier(PCall::transfer_multi_currencies_selectors());
+		tester.test_default_modifier(PCall::transfer_with_fee_selectors());
+		tester.test_default_modifier(PCall::transfer_multiasset_with_fee_selectors());
+	});
 }
 
 #[test]
 fn selector_less_than_four_bytes() {
 	ExtBuilder::default().build().execute_with(|| {
 		precompiles()
-			.prepare_test(Alice, Precompile, vec![1u8, 2u8, 3u8])
-			.execute_reverts(|output| output == b"tried to parse selector out of bounds");
+			.prepare_test(Alice, Precompile1, vec![1u8, 2u8, 3u8])
+			.execute_reverts(|output| output == b"Tried to read selector out of bounds");
 	});
 }
 
@@ -53,21 +66,21 @@ fn selector_less_than_four_bytes() {
 fn no_selector_exists_but_length_is_right() {
 	ExtBuilder::default().build().execute_with(|| {
 		precompiles()
-			.prepare_test(Alice, Precompile, vec![1u8, 2u8, 3u8, 4u8])
-			.execute_reverts(|output| output == b"unknown selector");
+			.prepare_test(Alice, Precompile1, vec![1u8, 2u8, 3u8, 4u8])
+			.execute_reverts(|output| output == b"Unknown selector");
 	});
 }
 
 #[test]
 fn transfer_self_reserve_works() {
 	ExtBuilder::default()
-		.with_balances(vec![(Alice, 1000)])
+		.with_balances(vec![(Alice.into(), 1000)])
 		.build()
 		.execute_with(|| {
 			let destination = MultiLocation::new(
 				1,
 				Junctions::X1(Junction::AccountId32 {
-					network: NetworkId::Any,
+					network: None,
 					id: [1u8; 32],
 				}),
 			);
@@ -75,17 +88,17 @@ fn transfer_self_reserve_works() {
 			precompiles()
 				.prepare_test(
 					Alice,
-					Precompile,
-					EvmDataWriter::new_with_selector(Action::Transfer)
-						.write(Address(SelfReserve.into()))
-						.write(U256::from(500u32))
-						.write(destination.clone())
-						.write(U256::from(4000000u32))
-						.build(),
+					Precompile1,
+					PCall::transfer {
+						currency_address: Address(SelfReserveAccount.into()),
+						amount: 500.into(),
+						destination: destination.clone(),
+						weight: 4_000_000,
+					},
 				)
 				.expect_cost(2000)
 				.expect_no_logs()
-				.execute_returns(vec![]);
+				.execute_returns(());
 
 			let expected_asset: MultiAsset = MultiAsset {
 				id: AssetId::Concrete(
@@ -93,8 +106,8 @@ fn transfer_self_reserve_works() {
 				),
 				fun: Fungibility::Fungible(500),
 			};
-			let expected: crate::mock::Event = XtokensEvent::TransferredMultiAssets {
-				sender: Alice,
+			let expected: crate::mock::RuntimeEvent = XtokensEvent::TransferredMultiAssets {
+				sender: Alice.into(),
 				assets: vec![expected_asset.clone()].into(),
 				fee: expected_asset,
 				dest: destination,
@@ -108,13 +121,13 @@ fn transfer_self_reserve_works() {
 #[test]
 fn transfer_to_reserve_works() {
 	ExtBuilder::default()
-		.with_balances(vec![(Alice, 1000)])
+		.with_balances(vec![(Alice.into(), 1000)])
 		.build()
 		.execute_with(|| {
 			let destination = MultiLocation::new(
 				1,
 				Junctions::X1(Junction::AccountId32 {
-					network: NetworkId::Any,
+					network: None,
 					id: [1u8; 32],
 				}),
 			);
@@ -122,17 +135,17 @@ fn transfer_to_reserve_works() {
 			precompiles()
 				.prepare_test(
 					Alice,
-					Precompile,
-					EvmDataWriter::new_with_selector(Action::Transfer)
-						.write(Address(AssetId(0u128).into()))
-						.write(U256::from(500u32))
-						.write(destination.clone())
-						.write(U256::from(4000000u32))
-						.build(),
+					Precompile1,
+					PCall::transfer {
+						currency_address: Address(AssetAccount(0u128).into()),
+						amount: 500.into(),
+						destination: destination.clone(),
+						weight: 4_000_000,
+					},
 				)
 				.expect_cost(3000)
 				.expect_no_logs()
-				.execute_returns(vec![]);
+				.execute_returns(());
 
 			let expected_asset: MultiAsset = MultiAsset {
 				id: AssetId::Concrete(
@@ -140,8 +153,8 @@ fn transfer_to_reserve_works() {
 				),
 				fun: Fungibility::Fungible(500),
 			};
-			let expected: crate::mock::Event = XtokensEvent::TransferredMultiAssets {
-				sender: Alice,
+			let expected: crate::mock::RuntimeEvent = XtokensEvent::TransferredMultiAssets {
+				sender: Alice.into(),
 				assets: vec![expected_asset.clone()].into(),
 				fee: expected_asset,
 				dest: destination,
@@ -155,13 +168,13 @@ fn transfer_to_reserve_works() {
 #[test]
 fn transfer_to_reserve_with_fee_works() {
 	ExtBuilder::default()
-		.with_balances(vec![(Alice, 1000)])
+		.with_balances(vec![(Alice.into(), 1000)])
 		.build()
 		.execute_with(|| {
 			let destination = MultiLocation::new(
 				1,
 				Junctions::X1(Junction::AccountId32 {
-					network: NetworkId::Any,
+					network: None,
 					id: [1u8; 32],
 				}),
 			);
@@ -170,18 +183,18 @@ fn transfer_to_reserve_with_fee_works() {
 			precompiles()
 				.prepare_test(
 					Alice,
-					Precompile,
-					EvmDataWriter::new_with_selector(Action::TransferWithFee)
-						.write(Address(AssetId(0u128).into()))
-						.write(U256::from(500u64))
-						.write(U256::from(50u64))
-						.write(destination.clone())
-						.write(U256::from(4000000u64))
-						.build(),
+					Precompile1,
+					PCall::transfer_with_fee {
+						currency_address: Address(AssetAccount(0u128).into()),
+						amount: 500.into(),
+						fee: 50.into(),
+						destination: destination.clone(),
+						weight: 4_000_000,
+					},
 				)
 				.expect_cost(3000)
 				.expect_no_logs()
-				.execute_returns(vec![]);
+				.execute_returns(());
 
 			let expected_asset: MultiAsset = MultiAsset {
 				id: AssetId::Concrete(
@@ -195,8 +208,8 @@ fn transfer_to_reserve_with_fee_works() {
 				),
 				fun: Fungibility::Fungible(50),
 			};
-			let expected: crate::mock::Event = XtokensEvent::TransferredMultiAssets {
-				sender: Alice,
+			let expected: crate::mock::RuntimeEvent = XtokensEvent::TransferredMultiAssets {
+				sender: Alice.into(),
 				assets: vec![expected_asset.clone(), expected_fee.clone()].into(),
 				fee: expected_fee,
 				dest: destination,
@@ -211,13 +224,13 @@ fn transfer_to_reserve_with_fee_works() {
 #[test]
 fn transfer_non_reserve_to_non_reserve_works() {
 	ExtBuilder::default()
-		.with_balances(vec![(Alice, 1000)])
+		.with_balances(vec![(Alice.into(), 1000)])
 		.build()
 		.execute_with(|| {
 			let destination = MultiLocation::new(
 				1,
 				Junctions::X1(Junction::AccountId32 {
-					network: NetworkId::Any,
+					network: None,
 					id: [1u8; 32],
 				}),
 			);
@@ -226,17 +239,17 @@ fn transfer_non_reserve_to_non_reserve_works() {
 			precompiles()
 				.prepare_test(
 					Alice,
-					Precompile,
-					EvmDataWriter::new_with_selector(Action::Transfer)
-						.write(Address(AssetId(1u128).into()))
-						.write(U256::from(500u32))
-						.write(destination.clone())
-						.write(U256::from(4000000u32))
-						.build(),
+					Precompile1,
+					PCall::transfer {
+						currency_address: Address(AssetAccount(1u128).into()),
+						amount: 500.into(),
+						destination: destination.clone(),
+						weight: 4_000_000,
+					},
 				)
 				.expect_cost(3000)
 				.expect_no_logs()
-				.execute_returns(vec![]);
+				.execute_returns(());
 
 			let expected_asset: MultiAsset = MultiAsset {
 				id: AssetId::Concrete(
@@ -244,8 +257,8 @@ fn transfer_non_reserve_to_non_reserve_works() {
 				),
 				fun: Fungibility::Fungible(500),
 			};
-			let expected: crate::mock::Event = XtokensEvent::TransferredMultiAssets {
-				sender: Alice,
+			let expected: crate::mock::RuntimeEvent = XtokensEvent::TransferredMultiAssets {
+				sender: Alice.into(),
 				assets: vec![expected_asset.clone()].into(),
 				fee: expected_asset,
 				dest: destination,
@@ -259,13 +272,13 @@ fn transfer_non_reserve_to_non_reserve_works() {
 #[test]
 fn transfer_non_reserve_to_non_reserve_with_fee_works() {
 	ExtBuilder::default()
-		.with_balances(vec![(Alice, 1000)])
+		.with_balances(vec![(Alice.into(), 1000)])
 		.build()
 		.execute_with(|| {
 			let destination = MultiLocation::new(
 				1,
 				Junctions::X1(Junction::AccountId32 {
-					network: NetworkId::Any,
+					network: None,
 					id: [1u8; 32],
 				}),
 			);
@@ -274,18 +287,18 @@ fn transfer_non_reserve_to_non_reserve_with_fee_works() {
 			precompiles()
 				.prepare_test(
 					Alice,
-					Precompile,
-					EvmDataWriter::new_with_selector(Action::TransferWithFee)
-						.write(Address(AssetId(1u128).into()))
-						.write(U256::from(500u32))
-						.write(U256::from(50u32))
-						.write(destination.clone())
-						.write(U256::from(4000000u32))
-						.build(),
+					Precompile1,
+					PCall::transfer_with_fee {
+						currency_address: Address(AssetAccount(1u128).into()),
+						amount: 500.into(),
+						fee: 50.into(),
+						destination: destination.clone(),
+						weight: 4_000_000,
+					},
 				)
 				.expect_cost(3000)
 				.expect_no_logs()
-				.execute_returns(vec![]);
+				.execute_returns(());
 
 			let expected_asset: MultiAsset = MultiAsset {
 				id: AssetId::Concrete(
@@ -299,8 +312,8 @@ fn transfer_non_reserve_to_non_reserve_with_fee_works() {
 				),
 				fun: Fungibility::Fungible(50),
 			};
-			let expected: crate::mock::Event = XtokensEvent::TransferredMultiAssets {
-				sender: Alice,
+			let expected: crate::mock::RuntimeEvent = XtokensEvent::TransferredMultiAssets {
+				sender: Alice.into(),
 				assets: vec![expected_asset.clone(), expected_fee.clone()].into(),
 				fee: expected_fee,
 				dest: destination,
@@ -314,13 +327,13 @@ fn transfer_non_reserve_to_non_reserve_with_fee_works() {
 #[test]
 fn transfer_multi_asset_to_reserve_works() {
 	ExtBuilder::default()
-		.with_balances(vec![(Alice, 1000)])
+		.with_balances(vec![(Alice.into(), 1000)])
 		.build()
 		.execute_with(|| {
 			let destination = MultiLocation::new(
 				1,
 				Junctions::X1(Junction::AccountId32 {
-					network: NetworkId::Any,
+					network: None,
 					id: [1u8; 32],
 				}),
 			);
@@ -330,24 +343,24 @@ fn transfer_multi_asset_to_reserve_works() {
 			precompiles()
 				.prepare_test(
 					Alice,
-					Precompile,
-					EvmDataWriter::new_with_selector(Action::TransferMultiAsset)
-						.write(asset.clone())
-						.write(U256::from(500u32))
-						.write(destination.clone())
-						.write(U256::from(4000000u32))
-						.build(),
+					Precompile1,
+					PCall::transfer_multiasset {
+						asset: asset.clone(),
+						amount: 500.into(),
+						destination: destination.clone(),
+						weight: 4_000_000,
+					},
 				)
 				.expect_cost(3000)
 				.expect_no_logs()
-				.execute_returns(vec![]);
+				.execute_returns(());
 
 			let expected_asset: MultiAsset = MultiAsset {
 				id: AssetId::Concrete(asset),
 				fun: Fungibility::Fungible(500),
 			};
-			let expected: crate::mock::Event = XtokensEvent::TransferredMultiAssets {
-				sender: Alice,
+			let expected: crate::mock::RuntimeEvent = XtokensEvent::TransferredMultiAssets {
+				sender: Alice.into(),
 				assets: vec![expected_asset.clone()].into(),
 				fee: expected_asset,
 				dest: destination,
@@ -362,13 +375,13 @@ fn transfer_multi_asset_to_reserve_works() {
 #[test]
 fn transfer_multi_asset_self_reserve_works() {
 	ExtBuilder::default()
-		.with_balances(vec![(Alice, 1000)])
+		.with_balances(vec![(Alice.into(), 1000)])
 		.build()
 		.execute_with(|| {
 			let destination = MultiLocation::new(
 				1,
 				Junctions::X1(Junction::AccountId32 {
-					network: NetworkId::Any,
+					network: None,
 					id: [1u8; 32],
 				}),
 			);
@@ -378,24 +391,24 @@ fn transfer_multi_asset_self_reserve_works() {
 			precompiles()
 				.prepare_test(
 					Alice,
-					Precompile,
-					EvmDataWriter::new_with_selector(Action::TransferMultiAsset)
-						.write(self_reserve.clone())
-						.write(U256::from(500u32))
-						.write(destination.clone())
-						.write(U256::from(4000000u32))
-						.build(),
+					Precompile1,
+					PCall::transfer_multiasset {
+						asset: self_reserve.clone(),
+						amount: 500.into(),
+						destination: destination.clone(),
+						weight: 4_000_000,
+					},
 				)
 				.expect_cost(2000)
 				.expect_no_logs()
-				.execute_returns(vec![]);
+				.execute_returns(());
 
 			let expected_asset: MultiAsset = MultiAsset {
 				id: AssetId::Concrete(self_reserve),
 				fun: Fungibility::Fungible(500),
 			};
-			let expected: crate::mock::Event = XtokensEvent::TransferredMultiAssets {
-				sender: Alice,
+			let expected: crate::mock::RuntimeEvent = XtokensEvent::TransferredMultiAssets {
+				sender: Alice.into(),
 				assets: vec![expected_asset.clone()].into(),
 				fee: expected_asset,
 				dest: destination,
@@ -409,13 +422,13 @@ fn transfer_multi_asset_self_reserve_works() {
 #[test]
 fn transfer_multi_asset_self_reserve_with_fee_works() {
 	ExtBuilder::default()
-		.with_balances(vec![(Alice, 1000)])
+		.with_balances(vec![(Alice.into(), 1000)])
 		.build()
 		.execute_with(|| {
 			let destination = MultiLocation::new(
 				1,
 				Junctions::X1(Junction::AccountId32 {
-					network: NetworkId::Any,
+					network: None,
 					id: [1u8; 32],
 				}),
 			);
@@ -425,18 +438,18 @@ fn transfer_multi_asset_self_reserve_with_fee_works() {
 			precompiles()
 				.prepare_test(
 					Alice,
-					Precompile,
-					EvmDataWriter::new_with_selector(Action::TransferMultiAssetWithFee)
-						.write(self_reserve.clone())
-						.write(U256::from(500u32))
-						.write(U256::from(50u32))
-						.write(destination.clone())
-						.write(U256::from(4000000u32))
-						.build(),
+					Precompile1,
+					PCall::transfer_multiasset_with_fee {
+						asset: self_reserve.clone(),
+						amount: 500.into(),
+						fee: 50.into(),
+						destination: destination.clone(),
+						weight: 4_000_000,
+					},
 				)
 				.expect_cost(2000)
 				.expect_no_logs()
-				.execute_returns(vec![]);
+				.execute_returns(());
 
 			let expected_asset: MultiAsset = MultiAsset {
 				id: AssetId::Concrete(self_reserve.clone()),
@@ -446,8 +459,8 @@ fn transfer_multi_asset_self_reserve_with_fee_works() {
 				id: AssetId::Concrete(self_reserve),
 				fun: Fungibility::Fungible(50),
 			};
-			let expected: crate::mock::Event = XtokensEvent::TransferredMultiAssets {
-				sender: Alice,
+			let expected: crate::mock::RuntimeEvent = XtokensEvent::TransferredMultiAssets {
+				sender: Alice.into(),
 				assets: vec![expected_asset.clone(), expected_fee.clone()].into(),
 				fee: expected_fee,
 				dest: destination,
@@ -461,13 +474,13 @@ fn transfer_multi_asset_self_reserve_with_fee_works() {
 #[test]
 fn transfer_multi_asset_non_reserve_to_non_reserve() {
 	ExtBuilder::default()
-		.with_balances(vec![(Alice, 1000)])
+		.with_balances(vec![(Alice.into(), 1000)])
 		.build()
 		.execute_with(|| {
 			let destination = MultiLocation::new(
 				1,
 				Junctions::X1(Junction::AccountId32 {
-					network: NetworkId::Any,
+					network: None,
 					id: [1u8; 32],
 				}),
 			);
@@ -480,24 +493,24 @@ fn transfer_multi_asset_non_reserve_to_non_reserve() {
 			precompiles()
 				.prepare_test(
 					Alice,
-					Precompile,
-					EvmDataWriter::new_with_selector(Action::TransferMultiAsset)
-						.write(asset_location.clone())
-						.write(U256::from(500u32))
-						.write(destination.clone())
-						.write(U256::from(4000000u32))
-						.build(),
+					Precompile1,
+					PCall::transfer_multiasset {
+						asset: asset_location.clone(),
+						amount: 500.into(),
+						destination: destination.clone(),
+						weight: 4_000_000,
+					},
 				)
 				.expect_cost(3000)
 				.expect_no_logs()
-				.execute_returns(vec![]);
+				.execute_returns(());
 
 			let expected_asset: MultiAsset = MultiAsset {
 				id: AssetId::Concrete(asset_location),
 				fun: Fungibility::Fungible(500),
 			};
-			let expected: crate::mock::Event = XtokensEvent::TransferredMultiAssets {
-				sender: Alice,
+			let expected: crate::mock::RuntimeEvent = XtokensEvent::TransferredMultiAssets {
+				sender: Alice.into(),
 				assets: vec![expected_asset.clone()].into(),
 				fee: expected_asset,
 				dest: destination,
@@ -511,13 +524,13 @@ fn transfer_multi_asset_non_reserve_to_non_reserve() {
 #[test]
 fn transfer_multi_asset_non_reserve_to_non_reserve_with_fee() {
 	ExtBuilder::default()
-		.with_balances(vec![(Alice, 1000)])
+		.with_balances(vec![(Alice.into(), 1000)])
 		.build()
 		.execute_with(|| {
 			let destination = MultiLocation::new(
 				1,
 				Junctions::X1(Junction::AccountId32 {
-					network: NetworkId::Any,
+					network: None,
 					id: [1u8; 32],
 				}),
 			);
@@ -530,18 +543,18 @@ fn transfer_multi_asset_non_reserve_to_non_reserve_with_fee() {
 			precompiles()
 				.prepare_test(
 					Alice,
-					Precompile,
-					EvmDataWriter::new_with_selector(Action::TransferMultiAssetWithFee)
-						.write(asset_location.clone())
-						.write(U256::from(500u32))
-						.write(U256::from(50u32))
-						.write(destination.clone())
-						.write(U256::from(4000000u32))
-						.build(),
+					Precompile1,
+					PCall::transfer_multiasset_with_fee {
+						asset: asset_location.clone(),
+						amount: 500.into(),
+						fee: 50.into(),
+						destination: destination.clone(),
+						weight: 4_000_000,
+					},
 				)
 				.expect_cost(3000)
 				.expect_no_logs()
-				.execute_returns(vec![]);
+				.execute_returns(());
 
 			let expected_asset: MultiAsset = MultiAsset {
 				id: AssetId::Concrete(asset_location.clone()),
@@ -551,8 +564,8 @@ fn transfer_multi_asset_non_reserve_to_non_reserve_with_fee() {
 				id: AssetId::Concrete(asset_location),
 				fun: Fungibility::Fungible(50),
 			};
-			let expected: crate::mock::Event = XtokensEvent::TransferredMultiAssets {
-				sender: Alice,
+			let expected: crate::mock::RuntimeEvent = XtokensEvent::TransferredMultiAssets {
+				sender: Alice.into(),
 				assets: vec![expected_asset.clone(), expected_fee.clone()].into(),
 				fee: expected_fee,
 				dest: destination,
@@ -566,36 +579,36 @@ fn transfer_multi_asset_non_reserve_to_non_reserve_with_fee() {
 #[test]
 fn transfer_multi_currencies() {
 	ExtBuilder::default()
-		.with_balances(vec![(Alice, 1000)])
+		.with_balances(vec![(Alice.into(), 1000)])
 		.build()
 		.execute_with(|| {
 			let destination = MultiLocation::new(
 				1,
 				Junctions::X1(Junction::AccountId32 {
-					network: NetworkId::Any,
+					network: None,
 					id: [1u8; 32],
 				}),
 			);
 			let currencies: Vec<Currency> = vec![
-				(Address(AssetId(1u128).into()), U256::from(500)).into(),
-				(Address(AssetId(2u128).into()), U256::from(500)).into(),
+				(Address(AssetAccount(1u128).into()), U256::from(500)).into(),
+				(Address(AssetAccount(2u128).into()), U256::from(500)).into(),
 			];
 
 			// We are transferring 2 assets
 			precompiles()
 				.prepare_test(
 					Alice,
-					Precompile,
-					EvmDataWriter::new_with_selector(Action::TransferMultiCurrencies)
-						.write(currencies)
-						.write(0u32)
-						.write(destination.clone())
-						.write(U256::from(4000000))
-						.build(),
+					Precompile1,
+					PCall::transfer_multi_currencies {
+						currencies: currencies.into(),
+						fee_item: 0,
+						destination: destination.clone(),
+						weight: 4_000_000,
+					},
 				)
 				.expect_cost(3000)
 				.expect_no_logs()
-				.execute_returns(vec![]);
+				.execute_returns(());
 
 			let expected_asset_1: MultiAsset = MultiAsset {
 				id: AssetId::Concrete(
@@ -609,8 +622,8 @@ fn transfer_multi_currencies() {
 				),
 				fun: Fungibility::Fungible(500),
 			};
-			let expected: crate::mock::Event = XtokensEvent::TransferredMultiAssets {
-				sender: Alice,
+			let expected: crate::mock::RuntimeEvent = XtokensEvent::TransferredMultiAssets {
+				sender: Alice.into(),
 				assets: vec![expected_asset_1.clone(), expected_asset_2].into(),
 				fee: expected_asset_1,
 				dest: destination,
@@ -624,7 +637,7 @@ fn transfer_multi_currencies() {
 #[test]
 fn transfer_multi_assets() {
 	ExtBuilder::default()
-		.with_balances(vec![(Alice, 1000)])
+		.with_balances(vec![(Alice.into(), 1000)])
 		.build()
 		.execute_with(|| {
 			let destination = MultiLocation::new(
@@ -632,7 +645,7 @@ fn transfer_multi_assets() {
 				Junctions::X2(
 					Junction::Parachain(2),
 					Junction::AccountId32 {
-						network: NetworkId::Any,
+						network: None,
 						id: [1u8; 32],
 					},
 				),
@@ -662,20 +675,20 @@ fn transfer_multi_assets() {
 			precompiles()
 				.prepare_test(
 					Alice,
-					Precompile,
-					EvmDataWriter::new_with_selector(Action::TransferMultiAssets)
-						.write(assets)
-						.write(0u32)
-						.write(destination.clone())
-						.write(U256::from(4000000))
-						.build(),
+					Precompile1,
+					PCall::transfer_multi_assets {
+						assets: assets.into(),
+						fee_item: 0,
+						destination: destination.clone(),
+						weight: 4_000_000,
+					},
 				)
 				.expect_cost(3000)
 				.expect_no_logs()
-				.execute_returns(vec![]);
+				.execute_returns(());
 
-			let expected: crate::mock::Event = XtokensEvent::TransferredMultiAssets {
-				sender: Alice,
+			let expected: crate::mock::RuntimeEvent = XtokensEvent::TransferredMultiAssets {
+				sender: Alice.into(),
 				assets: multiassets,
 				fee: (asset_1_location, 500).into(),
 				dest: destination,
@@ -691,42 +704,42 @@ fn transfer_multi_assets() {
 #[test]
 fn transfer_multi_currencies_cannot_insert_more_than_max() {
 	ExtBuilder::default()
-		.with_balances(vec![(Alice, 1000)])
+		.with_balances(vec![(Alice.into(), 1000)])
 		.build()
 		.execute_with(|| {
 			let destination = MultiLocation::new(
 				1,
 				Junctions::X1(Junction::AccountId32 {
-					network: NetworkId::Any,
+					network: None,
 					id: [1u8; 32],
 				}),
 			);
 			let currencies: Vec<Currency> = vec![
-				(Address(AssetId(1u128).into()), U256::from(500)).into(),
-				(Address(AssetId(2u128).into()), U256::from(500)).into(),
-				(Address(AssetId(3u128).into()), U256::from(500)).into(),
+				(Address(AssetAccount(1u128).into()), U256::from(500)).into(),
+				(Address(AssetAccount(2u128).into()), U256::from(500)).into(),
+				(Address(AssetAccount(3u128).into()), U256::from(500)).into(),
 			];
 
 			// We are transferring 3 assets, when max is 2
 			precompiles()
 				.prepare_test(
 					Alice,
-					Precompile,
-					EvmDataWriter::new_with_selector(Action::TransferMultiCurrencies)
-						.write(currencies)
-						.write(0u32)
-						.write(destination.clone())
-						.write(U256::from(4000000))
-						.build(),
+					Precompile1,
+					PCall::transfer_multi_currencies {
+						currencies: currencies.into(),
+						fee_item: 0,
+						destination: destination.clone(),
+						weight: 4_000_000,
+					},
 				)
-				.execute_reverts(|output| output == b"More than max number of assets given");
+				.execute_reverts(|output| output == b"currencies: Value is too large for length");
 		});
 }
 
 #[test]
 fn transfer_multi_assets_cannot_insert_more_than_max() {
 	ExtBuilder::default()
-		.with_balances(vec![(Alice, 1000)])
+		.with_balances(vec![(Alice.into(), 1000)])
 		.build()
 		.execute_with(|| {
 			let destination = MultiLocation::new(
@@ -734,7 +747,7 @@ fn transfer_multi_assets_cannot_insert_more_than_max() {
 				Junctions::X2(
 					Junction::Parachain(2),
 					Junction::AccountId32 {
-						network: NetworkId::Any,
+						network: None,
 						id: [1u8; 32],
 					},
 				),
@@ -764,22 +777,22 @@ fn transfer_multi_assets_cannot_insert_more_than_max() {
 			precompiles()
 				.prepare_test(
 					Alice,
-					Precompile,
-					EvmDataWriter::new_with_selector(Action::TransferMultiAssets)
-						.write(assets)
-						.write(0u32)
-						.write(destination.clone())
-						.write(U256::from(4000000))
-						.build(),
+					Precompile1,
+					PCall::transfer_multi_assets {
+						assets: assets.into(),
+						fee_item: 0,
+						destination: destination.clone(),
+						weight: 4_000_000,
+					},
 				)
-				.execute_reverts(|output| output == b"More than max number of assets given");
+				.execute_reverts(|output| output == b"assets: Value is too large for length");
 		});
 }
 
 #[test]
 fn transfer_multi_assets_is_not_sorted_error() {
 	ExtBuilder::default()
-		.with_balances(vec![(Alice, 1000)])
+		.with_balances(vec![(Alice.into(), 1000)])
 		.build()
 		.execute_with(|| {
 			let destination = MultiLocation::new(
@@ -787,7 +800,7 @@ fn transfer_multi_assets_is_not_sorted_error() {
 				Junctions::X2(
 					Junction::Parachain(2),
 					Junction::AccountId32 {
-						network: NetworkId::Any,
+						network: None,
 						id: [1u8; 32],
 					},
 				),
@@ -812,16 +825,40 @@ fn transfer_multi_assets_is_not_sorted_error() {
 			precompiles()
 				.prepare_test(
 					Alice,
-					Precompile,
-					EvmDataWriter::new_with_selector(Action::TransferMultiAssets)
-						.write(assets)
-						.write(0u32)
-						.write(destination.clone())
-						.write(U256::from(4000000))
-						.build(),
+					Precompile1,
+					PCall::transfer_multi_assets {
+						assets: assets.into(),
+						fee_item: 0,
+						destination: destination.clone(),
+						weight: 4_000_000,
+					},
 				)
 				.execute_reverts(|output| {
-					output == b"Provided vector either not sorted nor deduplicated"
+					output == b"assets: Provided assets either not sorted nor deduplicated"
 				});
 		});
+}
+
+#[test]
+fn test_solidity_interface_has_all_function_selectors_documented_and_implemented() {
+	check_precompile_implements_solidity_interfaces(&["Xtokens.sol"], PCall::supports_selector)
+}
+
+#[test]
+fn test_deprecated_solidity_selectors_are_supported() {
+	for deprecated_function in [
+		"transfer_with_fee(address,uint256,uint256,(uint8,bytes[]),uint64)",
+		"transfer_multiasset((uint8,bytes[]),uint256,(uint8,bytes[]),uint64)",
+		"transfer_multiasset_with_fee((uint8,bytes[]),uint256,uint256,(uint8,bytes[]),uint64)",
+		"transfer_multi_currencies((address,uint256)[],uint32,(uint8,bytes[]),uint64)",
+		"transfer_multi_assets(((uint8,bytes[]),uint256)[],uint32,(uint8,bytes[]),uint64)",
+	] {
+		let selector = compute_selector(deprecated_function);
+		if !PCall::supports_selector(selector) {
+			panic!(
+				"failed decoding selector 0x{:x} => '{}' as Action",
+				selector, deprecated_function,
+			)
+		}
+	}
 }

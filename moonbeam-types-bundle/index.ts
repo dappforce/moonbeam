@@ -1,4 +1,4 @@
-import {
+import type {
   OverrideBundleDefinition,
   OverrideBundleType,
   OverrideModuleType,
@@ -6,6 +6,7 @@ import {
   DefinitionRpcSub,
   RegistryTypes,
   OverrideVersionedType,
+  // @ts-expect-error
 } from "@polkadot/types/types";
 
 // override types for specific pallets
@@ -100,6 +101,8 @@ const TYPES_0_4: RegistryTypes = {
     nonce: "U256",
     balance: "u128",
   },
+  EthTransaction: "LegacyTransaction",
+  DispatchErrorModule: "DispatchErrorModuleU8",
 };
 const { RefCount, ...TYPES_5_5 } = TYPES_0_4;
 
@@ -433,7 +436,7 @@ export const moonbeamDefinitions = {
   rpc: rpcDefinitions,
   instances: {
     council: ["councilCollective"],
-    technicalCommittee: ["techCommitteeCollective"],
+    technicalCommittee: ["techCommitteeCollective", "openTechCommitteeCollective"],
   },
   types: [
     {

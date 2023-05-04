@@ -49,9 +49,9 @@ use nimbus_primitives::{AccountLookup, NimbusId};
 pub mod pallet {
 	use super::*;
 	use frame_support::pallet_prelude::*;
-	use frame_support::traits::{Currency, Imbalance, NamedReservableCurrency};
+	use frame_support::traits::{Currency, NamedReservableCurrency};
 	use frame_system::pallet_prelude::*;
-	use sp_runtime::traits::{CheckedSub, One, StaticLookup, Zero};
+	use sp_runtime::traits::{CheckedSub, One, Saturating, StaticLookup, Zero};
 
 	#[pallet::pallet]
 	#[pallet::without_storage_info]
@@ -67,31 +67,36 @@ pub mod pallet {
 	#[pallet::config]
 	pub trait Config: frame_system::Config {
 		/// Overarching event type.
-		type Event: From<Event<Self>> + IsType<<Self as frame_system::Config>::Event>;
+		type RuntimeEvent: From<Event<Self>> + IsType<<Self as frame_system::Config>::RuntimeEvent>;
 
 		/// A type to convert between AuthorId and AccountId. This pallet wrap the lookup to allow
 		/// orbiters authoring.
 		type AccountLookup: AccountLookup<Self::AccountId>;
 
 		/// Origin that is allowed to add a collator in orbiters program.
-		type AddCollatorOrigin: EnsureOrigin<Self::Origin>;
+		type AddCollatorOrigin: EnsureOrigin<Self::RuntimeOrigin>;
 
 		/// The currency type.
 		type Currency: NamedReservableCurrency<Self::AccountId>;
 
 		/// Origin that is allowed to remove a collator from orbiters program.
-		type DelCollatorOrigin: EnsureOrigin<Self::Origin>;
+		type DelCollatorOrigin: EnsureOrigin<Self::RuntimeOrigin>;
 
+		#[pallet::constant]
 		/// Maximum number of orbiters per collator.
 		type MaxPoolSize: Get<u32>;
 
+		#[pallet::constant]
 		/// Maximum number of round to keep on storage.
 		type MaxRoundArchive: Get<Self::RoundIndex>;
 
 		/// Reserve identifier for this pallet instance.
 		type OrbiterReserveIdentifier: Get<ReserveIdentifierOf<Self>>;
 
+		#[pallet::constant]
 		/// Number of rounds before changing the selected orbiter.
+		/// WARNING: when changing `RotatePeriod`, you need a migration code that sets
+		/// `ForceRotation` to true to avoid holes in `OrbiterPerRound`.
 		type RotatePeriod: Get<Self::RoundIndex>;
 
 		/// Round index type.
@@ -123,6 +128,12 @@ pub mod pallet {
 	#[pallet::storage]
 	/// Current round index
 	pub(crate) type CurrentRound<T: Config> = StorageValue<_, T::RoundIndex, ValueQuery>;
+
+	#[pallet::storage]
+	/// If true, it forces the rotation at the next round.
+	/// A use case: when changing RotatePeriod, you need a migration code that sets this value to
+	/// true to avoid holes in OrbiterPerRound.
+	pub(crate) type ForceRotation<T: Config> = StorageValue<_, bool, ValueQuery>;
 
 	#[pallet::storage]
 	#[pallet::getter(fn min_orbiter_deposit)]
@@ -178,8 +189,13 @@ pub mod pallet {
 			if let Some(round_to_prune) =
 				CurrentRound::<T>::get().checked_sub(&T::MaxRoundArchive::get())
 			{
-				OrbiterPerRound::<T>::remove_prefix(round_to_prune, None);
-				T::DbWeight::get().reads_writes(1, 1)
+				// TODO: Find better limit.
+				// Is it sure to be cleared in a single block? In which case we can probably have
+				// a lower limit.
+				// Otherwise, we should still have a lower limit, and implement a multi-block clear
+				// by using the return value of clear_prefix for subsequent blocks.
+				let result = OrbiterPerRound::<T>::clear_prefix(round_to_prune, u32::MAX, None);
+				T::WeightInfo::on_initialize(result.unique)
 			} else {
 				T::DbWeight::get().reads(1)
 			}
@@ -245,6 +261,7 @@ pub mod pallet {
 	#[pallet::call]
 	impl<T: Config> Pallet<T> {
 		/// Add an orbiter in a collator pool
+		#[pallet::call_index(0)]
 		#[pallet::weight(T::WeightInfo::collator_add_orbiter())]
 		pub fn collator_add_orbiter(
 			origin: OriginFor<T>,
@@ -284,6 +301,7 @@ pub mod pallet {
 		}
 
 		/// Remove an orbiter from the caller collator pool
+		#[pallet::call_index(1)]
 		#[pallet::weight(T::WeightInfo::collator_remove_orbiter())]
 		pub fn collator_remove_orbiter(
 			origin: OriginFor<T>,
@@ -296,6 +314,7 @@ pub mod pallet {
 		}
 
 		/// Remove the caller from the specified collator pool
+		#[pallet::call_index(2)]
 		#[pallet::weight(T::WeightInfo::orbiter_leave_collator_pool())]
 		pub fn orbiter_leave_collator_pool(
 			origin: OriginFor<T>,
@@ -308,6 +327,7 @@ pub mod pallet {
 		}
 
 		/// Registering as an orbiter
+		#[pallet::call_index(3)]
 		#[pallet::weight(T::WeightInfo::orbiter_register())]
 		pub fn orbiter_register(origin: OriginFor<T>) -> DispatchResult {
 			let orbiter = ensure_signed(origin)?;
@@ -332,6 +352,7 @@ pub mod pallet {
 		}
 
 		/// Deregistering from orbiters
+		#[pallet::call_index(4)]
 		#[pallet::weight(T::WeightInfo::orbiter_unregister(*collators_pool_count))]
 		pub fn orbiter_unregister(
 			origin: OriginFor<T>,
@@ -361,6 +382,7 @@ pub mod pallet {
 		}
 
 		/// Add a collator to orbiters program.
+		#[pallet::call_index(5)]
 		#[pallet::weight(T::WeightInfo::add_collator())]
 		pub fn add_collator(
 			origin: OriginFor<T>,
@@ -380,6 +402,7 @@ pub mod pallet {
 		}
 
 		/// Remove a collator from orbiters program.
+		#[pallet::call_index(6)]
 		#[pallet::weight(T::WeightInfo::remove_collator())]
 		pub fn remove_collator(
 			origin: OriginFor<T>,
@@ -435,6 +458,7 @@ pub mod pallet {
 						maybe_old_orbiter,
 						maybe_next_orbiter,
 					} = pool.rotate_orbiter();
+
 					// remove old orbiter, if any.
 					if let Some(CurrentOrbiter {
 						account_id: ref current_orbiter,
@@ -456,22 +480,31 @@ pub mod pallet {
 							collator.clone(),
 							Option::<T::AccountId>::None,
 						);
+						writes += 1;
+
 						// Insert new current orbiter
 						AccountLookupOverride::<T>::insert(
 							next_orbiter.clone(),
 							Some(collator.clone()),
 						);
-						OrbiterPerRound::<T>::insert(
-							round_index,
-							collator.clone(),
-							next_orbiter.clone(),
-						);
+						writes += 1;
+
+						let mut i = Zero::zero();
+						while i < T::RotatePeriod::get() {
+							OrbiterPerRound::<T>::insert(
+								round_index.saturating_add(i),
+								collator.clone(),
+								next_orbiter.clone(),
+							);
+							i += One::one();
+							writes += 1;
+						}
+
 						Self::deposit_event(Event::OrbiterRotation {
 							collator,
 							old_orbiter: maybe_old_orbiter.map(|orbiter| orbiter.account_id),
 							new_orbiter: Some(next_orbiter),
 						});
-						writes += 3;
 					} else {
 						// If there is no more active orbiter, you have to remove the collator override.
 						AccountLookupOverride::<T>::remove(collator.clone());
@@ -492,10 +525,15 @@ pub mod pallet {
 		pub fn on_new_round(round_index: T::RoundIndex) -> Weight {
 			CurrentRound::<T>::put(round_index);
 
-			if round_index % T::RotatePeriod::get() == Zero::zero() {
-				Self::on_rotate(round_index) + T::DbWeight::get().write
+			if ForceRotation::<T>::get() {
+				ForceRotation::<T>::put(false);
+				let _ = Self::on_rotate(round_index);
+				T::WeightInfo::on_new_round()
+			} else if round_index % T::RotatePeriod::get() == Zero::zero() {
+				let _ = Self::on_rotate(round_index);
+				T::WeightInfo::on_new_round()
 			} else {
-				T::DbWeight::get().write
+				T::DbWeight::get().writes(1)
 			}
 		}
 		/// Notify this pallet that a collator received rewards
@@ -505,35 +543,22 @@ pub mod pallet {
 			amount: BalanceOf<T>,
 		) -> Weight {
 			if let Some(orbiter) = OrbiterPerRound::<T>::take(pay_for_round, &collator) {
-				if let Ok(amount_to_transfer) = T::Currency::withdraw(
-					&collator,
-					amount,
-					frame_support::traits::WithdrawReasons::TRANSFER,
-					frame_support::traits::ExistenceRequirement::KeepAlive,
-				) {
-					let real_reward = amount_to_transfer.peek();
-					if T::Currency::resolve_into_existing(&orbiter, amount_to_transfer).is_ok() {
-						Self::deposit_event(Event::OrbiterRewarded {
-							account: orbiter,
-							rewards: real_reward,
-						});
-						// reads: withdraw + resolve_into_existing
-						// writes: take + withdraw + resolve_into_existing
-						T::DbWeight::get().reads_writes(2, 3)
-					} else {
-						// reads: withdraw + resolve_into_existing
-						// writes: take + withdraw
-						T::DbWeight::get().reads_writes(2, 2)
-					}
-				} else {
-					// reads: withdraw
-					// writes: take
-					T::DbWeight::get().reads_writes(1, 1)
+				if T::Currency::deposit_into_existing(&orbiter, amount).is_ok() {
+					Self::deposit_event(Event::OrbiterRewarded {
+						account: orbiter,
+						rewards: amount,
+					});
 				}
+				T::WeightInfo::distribute_rewards()
 			} else {
 				// writes: take
 				T::DbWeight::get().writes(1)
 			}
+		}
+
+		/// Check if an account is an orbiter account for a given round
+		pub fn is_orbiter(for_round: T::RoundIndex, collator: T::AccountId) -> bool {
+			OrbiterPerRound::<T>::contains_key(for_round, &collator)
 		}
 	}
 }

@@ -15,7 +15,10 @@
 // along with Moonbeam.  If not, see <http://www.gnu.org/licenses/>.
 
 //! Solidity types for randomness precompile.
-use precompile_utils::prelude::*;
+use precompile_utils::{
+	prelude::*,
+	solidity::codec::{Reader, Writer},
+};
 
 pub enum RequestStatus {
 	DoesNotExist,
@@ -29,50 +32,58 @@ pub enum RandomnessSource {
 	RelayBabeEpoch,
 }
 
-impl EvmData for RequestStatus {
-	fn read(reader: &mut EvmDataReader) -> EvmResult<Self> {
-		match reader.read()? {
+impl solidity::Codec for RequestStatus {
+	fn read(reader: &mut Reader) -> MayRevert<Self> {
+		match reader.read().in_field("variant")? {
 			0u8 => Ok(RequestStatus::DoesNotExist),
 			1u8 => Ok(RequestStatus::Pending),
 			2u8 => Ok(RequestStatus::Ready),
 			3u8 => Ok(RequestStatus::Expired),
-			_ => Err(revert("Not available enum")),
+			_ => Err(RevertReason::custom("Unknown RequestStatus variant").into()),
 		}
 	}
 
-	fn write(writer: &mut EvmDataWriter, value: Self) {
+	fn write(writer: &mut Writer, value: Self) {
 		let encoded: u8 = match value {
 			RequestStatus::DoesNotExist => 0u8,
 			RequestStatus::Pending => 1u8,
 			RequestStatus::Ready => 2u8,
 			RequestStatus::Expired => 3u8,
 		};
-		EvmData::write(writer, encoded);
+		solidity::Codec::write(writer, encoded);
 	}
 
 	fn has_static_size() -> bool {
 		true
 	}
+
+	fn signature() -> String {
+		u8::signature()
+	}
 }
 
-impl EvmData for RandomnessSource {
-	fn read(reader: &mut EvmDataReader) -> EvmResult<Self> {
-		match reader.read()? {
+impl solidity::Codec for RandomnessSource {
+	fn read(reader: &mut Reader) -> MayRevert<Self> {
+		match reader.read().in_field("variant")? {
 			0u8 => Ok(RandomnessSource::LocalVRF),
 			1u8 => Ok(RandomnessSource::RelayBabeEpoch),
-			_ => Err(revert("Not available enum")),
+			_ => Err(RevertReason::custom("Unknown RandomnessSource variant").into()),
 		}
 	}
 
-	fn write(writer: &mut EvmDataWriter, value: Self) {
+	fn write(writer: &mut Writer, value: Self) {
 		let encoded: u8 = match value {
 			RandomnessSource::LocalVRF => 0u8,
 			RandomnessSource::RelayBabeEpoch => 1u8,
 		};
-		EvmData::write(writer, encoded);
+		solidity::Codec::write(writer, encoded);
 	}
 
 	fn has_static_size() -> bool {
 		true
+	}
+
+	fn signature() -> String {
+		u8::signature()
 	}
 }

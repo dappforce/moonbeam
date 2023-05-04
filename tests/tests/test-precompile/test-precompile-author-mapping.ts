@@ -15,20 +15,18 @@ import {
   createTransaction,
 } from "../../util/transactions";
 
-const AUTHOR_MAPPING_CONTRACT = getCompiled("AuthorMapping");
+const AUTHOR_MAPPING_CONTRACT = getCompiled("precompiles/author-mapping/AuthorMapping");
 const AUTHOR_MAPPING_INTERFACE = new ethers.utils.Interface(AUTHOR_MAPPING_CONTRACT.contract.abi);
 
 describeDevMoonbeamAllEthTxTypes("Precompiles - author mapping", (context) => {
   it("allows to add association", async function () {
     const mappingAccount = generateKeyringPair("sr25519");
-    const { rawTx } = await createContract(context, "AuthorMapping");
-    await context.createBlock(rawTx);
 
     const { result } = await context.createBlock(
       createTransaction(context, {
         ...ALITH_TRANSACTION_TEMPLATE,
         to: PRECOMPILE_AUTHOR_MAPPING_ADDRESS,
-        data: AUTHOR_MAPPING_INTERFACE.encodeFunctionData("add_association", [
+        data: AUTHOR_MAPPING_INTERFACE.encodeFunctionData("addAssociation", [
           mappingAccount.publicKey,
         ]),
       })
@@ -65,12 +63,9 @@ describeDevMoonbeamAllEthTxTypes("Precompiles - author mapping", (context) => {
   });
 
   it("allows to update association", async function () {
-    const { rawTx } = await createContract(context, "AuthorMapping");
-    await context.createBlock(rawTx);
-
     const tx = await createTransaction(context, {
       to: PRECOMPILE_AUTHOR_MAPPING_ADDRESS,
-      data: AUTHOR_MAPPING_INTERFACE.encodeFunctionData("update_association", [
+      data: AUTHOR_MAPPING_INTERFACE.encodeFunctionData("updateAssociation", [
         firstMappingAccount.publicKey,
         secondMappingAccount.publicKey,
       ]),
@@ -114,14 +109,11 @@ describeDevMoonbeamAllEthTxTypes("Precompiles - author mapping", (context) => {
     expect(mapping.unwrap().deposit.toBigInt()).to.eq(DEFAULT_GENESIS_MAPPING);
   });
   it("allows to clear association", async function () {
-    const { rawTx } = await createContract(context, "AuthorMapping");
-    await context.createBlock(rawTx);
-
     const { result } = await context.createBlock(
       createTransaction(context, {
         ...ALITH_TRANSACTION_TEMPLATE,
         to: PRECOMPILE_AUTHOR_MAPPING_ADDRESS,
-        data: AUTHOR_MAPPING_INTERFACE.encodeFunctionData("clear_association", [
+        data: AUTHOR_MAPPING_INTERFACE.encodeFunctionData("clearAssociation", [
           mappingAccount.publicKey,
         ]),
       })

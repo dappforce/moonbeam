@@ -15,18 +15,17 @@
 // along with Moonbeam.  If not, see <http://www.gnu.org/licenses/>.
 
 #![cfg_attr(not(feature = "std"), no_std)]
-#![feature(assert_matches)]
 
 extern crate alloc;
 
-pub mod costs;
-pub mod handle;
-pub mod logs;
-pub mod modifier;
+// Allows to use inside this crate `solidity::Codec` derive macro,which depends on
+// `precompile_utils` being in the list of imported crates.
+extern crate self as precompile_utils;
+
+pub mod evm;
 pub mod precompile_set;
 pub mod substrate;
 
-#[cfg(feature = "testing")]
 pub mod solidity;
 
 #[cfg(feature = "testing")]
@@ -35,72 +34,49 @@ pub mod testing;
 #[cfg(test)]
 mod tests;
 
-use crate::alloc::borrow::ToOwned;
-use fp_evm::{
-	ExitError, ExitRevert, ExitSucceed, PrecompileFailure, PrecompileHandle, PrecompileOutput,
-};
+use fp_evm::PrecompileFailure;
 
-pub mod data;
+// pub mod data;
 
-// pub use data::{Address, Bytes, EvmData, EvmDataReader, EvmDataWriter};
-// pub use fp_evm::Precompile;
-// pub use precompile_utils_macro::{generate_function_selector, keccak256};
-
-/// Return an error with provided (static) text.
-/// Using the `revert` function of `Gasometer` is preferred as erroring
-/// consumed all the gas limit and the error message is not easily
-/// retrievable.
-#[must_use]
-pub fn error<T: Into<alloc::borrow::Cow<'static, str>>>(text: T) -> PrecompileFailure {
-	PrecompileFailure::Error {
-		exit_status: ExitError::Other(text.into()),
-	}
-}
-
-#[must_use]
-pub fn revert(output: impl AsRef<[u8]>) -> PrecompileFailure {
-	PrecompileFailure::Revert {
-		exit_status: ExitRevert::Reverted,
-		output: output.as_ref().to_owned(),
-	}
-}
-
-#[must_use]
-pub fn succeed(output: impl AsRef<[u8]>) -> PrecompileOutput {
-	PrecompileOutput {
-		exit_status: ExitSucceed::Returned,
-		output: output.as_ref().to_owned(),
-	}
-}
+// pub use data::{solidity::Codec, Reader, Writer};
+pub use fp_evm::Precompile;
+pub use precompile_utils_macro::{keccak256, precompile, precompile_name_from_address};
 
 /// Alias for Result returning an EVM precompile error.
 pub type EvmResult<T = ()> = Result<T, PrecompileFailure>;
 
-/// Trait similar to `fp_evm::Precompile` but with a `&self` parameter to manage some
-/// state (this state is only kept in a single transaction and is lost afterward).
-pub trait StatefulPrecompile {
-	/// Instanciate the precompile.
-	/// Will be called once when building the PrecompileSet at the start of each
-	/// Ethereum transaction.
-	fn new() -> Self;
-
-	/// Execute the precompile with a reference to its state.
-	fn execute(&self, handle: &mut impl PrecompileHandle) -> EvmResult<PrecompileOutput>;
-}
-
 pub mod prelude {
 	pub use {
 		crate::{
-			data::{Address, Bytes, EvmData, EvmDataReader, EvmDataWriter},
-			error,
-			handle::PrecompileHandleExt,
-			logs::{log0, log1, log2, log3, log4, LogExt},
-			modifier::{check_function_modifier, FunctionModifier},
-			revert,
-			substrate::RuntimeHelper,
-			succeed, EvmResult, StatefulPrecompile,
+			evm::{
+				handle::PrecompileHandleExt,
+				logs::{log0, log1, log2, log3, log4, LogExt},
+			},
+			solidity::{
+				// We export solidity itself to encourage using `solidity::Codec` to avoid confusion
+				// with parity_scale_codec,
+				self,
+				codec::{
+					Address,
+					BoundedBytes,
+					BoundedString,
+					BoundedVec,
+					// Allow usage of Codec methods while not exporting the name directly.
+					Codec as _,
+					Convert,
+					UnboundedBytes,
+					UnboundedString,
+				},
+				revert::{
+					revert, BacktraceExt, InjectBacktrace, MayRevert, Revert, RevertExt,
+					RevertReason,
+				},
+			},
+			substrate::{RuntimeHelper, TryDispatchError},
+			EvmResult,
 		},
-		pallet_evm::PrecompileHandle,
-		precompile_utils_macro::{generate_function_selector, keccak256},
+		alloc::string::String,
+		pallet_evm::{PrecompileHandle, PrecompileOutput},
+		precompile_utils_macro::{keccak256, precompile},
 	};
 }

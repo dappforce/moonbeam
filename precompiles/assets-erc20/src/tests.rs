@@ -14,16 +14,14 @@
 // You should have received a copy of the GNU General Public License
 // along with Moonbeam.  If not, see <http://www.gnu.org/licenses/>.
 
-use frame_support::assert_ok;
-use std::str::from_utf8;
-
 use crate::{eip2612::Eip2612, mock::*, *};
-
+use frame_support::assert_ok;
 use hex_literal::hex;
 use libsecp256k1::{sign, Message, SecretKey};
 use precompile_utils::testing::*;
 use sha3::{Digest, Keccak256};
 use sp_core::H256;
+use std::str::from_utf8;
 
 fn precompiles() -> Precompiles<Runtime> {
 	PrecompilesValue::get()
@@ -33,20 +31,16 @@ fn precompiles() -> Precompiles<Runtime> {
 fn selector_less_than_four_bytes() {
 	ExtBuilder::default().build().execute_with(|| {
 		assert_ok!(ForeignAssets::force_create(
-			Origin::root(),
+			RuntimeOrigin::root(),
 			0u128,
-			Account::Alice.into(),
+			CryptoAlith.into(),
 			true,
 			1
 		));
 		// This selector is only three bytes long when four are required.
 		precompiles()
-			.prepare_test(
-				Account::Alice,
-				Account::ForeignAssetId(0u128),
-				vec![1u8, 2u8, 3u8],
-			)
-			.execute_reverts(|output| output == b"tried to parse selector out of bounds");
+			.prepare_test(CryptoAlith, ForeignAssetId(0u128), vec![1u8, 2u8, 3u8])
+			.execute_reverts(|output| output == b"Tried to read selector out of bounds");
 	});
 }
 
@@ -54,37 +48,48 @@ fn selector_less_than_four_bytes() {
 fn no_selector_exists_but_length_is_right() {
 	ExtBuilder::default().build().execute_with(|| {
 		assert_ok!(ForeignAssets::force_create(
-			Origin::root(),
+			RuntimeOrigin::root(),
 			0u128,
-			Account::Alice.into(),
+			CryptoAlith.into(),
 			true,
 			1
 		));
 
 		precompiles()
-			.prepare_test(
-				Account::Alice,
-				Account::ForeignAssetId(0u128),
-				vec![1u8, 2u8, 3u8, 4u8],
-			)
-			.execute_reverts(|output| output == b"unknown selector");
+			.prepare_test(CryptoAlith, ForeignAssetId(0u128), vec![1u8, 2u8, 3u8, 4u8])
+			.execute_reverts(|output| output == b"Unknown selector");
 	});
 }
 
 #[test]
 fn selectors() {
-	assert_eq!(Action::BalanceOf as u32, 0x70a08231);
-	assert_eq!(Action::TotalSupply as u32, 0x18160ddd);
-	assert_eq!(Action::Approve as u32, 0x095ea7b3);
-	assert_eq!(Action::Allowance as u32, 0xdd62ed3e);
-	assert_eq!(Action::Transfer as u32, 0xa9059cbb);
-	assert_eq!(Action::TransferFrom as u32, 0x23b872dd);
-	assert_eq!(Action::Name as u32, 0x06fdde03);
-	assert_eq!(Action::Symbol as u32, 0x95d89b41);
-	assert_eq!(Action::Decimals as u32, 0x313ce567);
-	assert_eq!(Action::Eip2612Nonces as u32, 0x7ecebe00);
-	assert_eq!(Action::Eip2612Permit as u32, 0xd505accf);
-	assert_eq!(Action::Eip2612DomainSeparator as u32, 0x3644e515);
+	assert!(ForeignPCall::balance_of_selectors().contains(&0x70a08231));
+	assert!(ForeignPCall::total_supply_selectors().contains(&0x18160ddd));
+	assert!(ForeignPCall::approve_selectors().contains(&0x095ea7b3));
+	assert!(ForeignPCall::allowance_selectors().contains(&0xdd62ed3e));
+	assert!(ForeignPCall::freezer_selectors().contains(&0x92716054));
+	assert!(ForeignPCall::owner_selectors().contains(&0x8da5cb5b));
+	assert!(ForeignPCall::issuer_selectors().contains(&0x1d143848));
+	assert!(ForeignPCall::admin_selectors().contains(&0xf851a440));
+	assert!(ForeignPCall::transfer_selectors().contains(&0xa9059cbb));
+	assert!(ForeignPCall::transfer_from_selectors().contains(&0x23b872dd));
+	assert!(ForeignPCall::name_selectors().contains(&0x06fdde03));
+	assert!(ForeignPCall::symbol_selectors().contains(&0x95d89b41));
+	assert!(ForeignPCall::decimals_selectors().contains(&0x313ce567));
+	assert!(ForeignPCall::eip2612_nonces_selectors().contains(&0x7ecebe00));
+	assert!(ForeignPCall::eip2612_permit_selectors().contains(&0xd505accf));
+	assert!(ForeignPCall::eip2612_domain_separator_selectors().contains(&0x3644e515));
+
+	assert!(ForeignPCall::mint_selectors().contains(&0x40c10f19));
+	assert!(ForeignPCall::burn_selectors().contains(&0x9dc29fac));
+	assert!(ForeignPCall::freeze_selectors().contains(&0x8d1fdf2f));
+	assert!(ForeignPCall::thaw_selectors().contains(&0x5ea20216));
+	assert!(ForeignPCall::freeze_asset_selectors().contains(&0xd4937f51));
+	assert!(ForeignPCall::thaw_asset_selectors().contains(&0x51ec2ad7));
+	assert!(ForeignPCall::transfer_ownership_selectors().contains(&0xf2fde38b));
+	assert!(ForeignPCall::set_team_selectors().contains(&0xc7d93c59));
+	assert!(ForeignPCall::set_metadata_selectors().contains(&0x37d2c2f4));
+	assert!(ForeignPCall::clear_metadata_selectors().contains(&0xefb6d432));
 
 	assert_eq!(
 		crate::SELECTOR_LOG_TRANSFER,
@@ -98,367 +103,409 @@ fn selectors() {
 }
 
 #[test]
-fn get_total_supply() {
+fn modifiers() {
 	ExtBuilder::default()
-		.with_balances(vec![(Account::Alice, 1000), (Account::Bob, 2500)])
+		.with_balances(vec![(CryptoAlith.into(), 1000)])
 		.build()
 		.execute_with(|| {
 			assert_ok!(ForeignAssets::force_create(
-				Origin::root(),
+				RuntimeOrigin::root(),
 				0u128,
-				Account::Alice.into(),
+				CryptoAlith.into(),
+				true,
+				1
+			));
+			let mut tester =
+				PrecompilesModifierTester::new(precompiles(), CryptoAlith, ForeignAssetId(0u128));
+
+			tester.test_view_modifier(ForeignPCall::balance_of_selectors());
+			tester.test_view_modifier(ForeignPCall::total_supply_selectors());
+			tester.test_default_modifier(ForeignPCall::approve_selectors());
+			tester.test_view_modifier(ForeignPCall::allowance_selectors());
+			tester.test_default_modifier(ForeignPCall::transfer_selectors());
+			tester.test_default_modifier(ForeignPCall::transfer_from_selectors());
+			tester.test_view_modifier(ForeignPCall::name_selectors());
+			tester.test_view_modifier(ForeignPCall::symbol_selectors());
+			tester.test_view_modifier(ForeignPCall::decimals_selectors());
+			tester.test_view_modifier(ForeignPCall::eip2612_nonces_selectors());
+			tester.test_default_modifier(ForeignPCall::eip2612_permit_selectors());
+			tester.test_view_modifier(ForeignPCall::eip2612_domain_separator_selectors());
+
+			tester.test_default_modifier(ForeignPCall::mint_selectors());
+			tester.test_default_modifier(ForeignPCall::burn_selectors());
+			tester.test_default_modifier(ForeignPCall::freeze_selectors());
+			tester.test_default_modifier(ForeignPCall::thaw_selectors());
+			tester.test_default_modifier(ForeignPCall::freeze_asset_selectors());
+			tester.test_default_modifier(ForeignPCall::thaw_asset_selectors());
+			tester.test_default_modifier(ForeignPCall::transfer_ownership_selectors());
+			tester.test_default_modifier(ForeignPCall::set_team_selectors());
+			tester.test_default_modifier(ForeignPCall::set_metadata_selectors());
+			tester.test_default_modifier(ForeignPCall::clear_metadata_selectors());
+		});
+}
+
+#[test]
+fn get_total_supply() {
+	ExtBuilder::default()
+		.with_balances(vec![(CryptoAlith.into(), 1000), (Bob.into(), 2500)])
+		.build()
+		.execute_with(|| {
+			assert_ok!(ForeignAssets::force_create(
+				RuntimeOrigin::root(),
+				0u128,
+				CryptoAlith.into(),
 				true,
 				1
 			));
 			assert_ok!(ForeignAssets::mint(
-				Origin::signed(Account::Alice),
+				RuntimeOrigin::signed(CryptoAlith.into()),
 				0u128,
-				Account::Alice.into(),
+				CryptoAlith.into(),
 				1000
 			));
 
 			precompiles()
 				.prepare_test(
-					Account::Alice,
-					Account::ForeignAssetId(0u128),
-					EvmDataWriter::new_with_selector(Action::TotalSupply).build(),
+					CryptoAlith,
+					ForeignAssetId(0u128),
+					ForeignPCall::total_supply {},
 				)
 				.expect_cost(0) // TODO: Test db read/write costs
 				.expect_no_logs()
-				.execute_returns(EvmDataWriter::new().write(U256::from(1000u64)).build());
+				.execute_returns(U256::from(1000u64));
 		});
 }
 
 #[test]
 fn get_balances_known_user() {
 	ExtBuilder::default()
-		.with_balances(vec![(Account::Alice, 1000)])
+		.with_balances(vec![(CryptoAlith.into(), 1000)])
 		.build()
 		.execute_with(|| {
 			assert_ok!(ForeignAssets::force_create(
-				Origin::root(),
+				RuntimeOrigin::root(),
 				0u128,
-				Account::Alice.into(),
+				CryptoAlith.into(),
 				true,
 				1
 			));
 			assert_ok!(ForeignAssets::mint(
-				Origin::signed(Account::Alice),
+				RuntimeOrigin::signed(CryptoAlith.into()),
 				0u128,
-				Account::Alice.into(),
+				CryptoAlith.into(),
 				1000
 			));
 
 			precompiles()
 				.prepare_test(
-					Account::Alice,
-					Account::ForeignAssetId(0u128),
-					EvmDataWriter::new_with_selector(Action::BalanceOf)
-						.write(Address(Account::Alice.into()))
-						.build(),
+					CryptoAlith,
+					ForeignAssetId(0u128),
+					ForeignPCall::balance_of {
+						who: Address(CryptoAlith.into()),
+					},
 				)
 				.expect_cost(0) // TODO: Test db read/write costs
 				.expect_no_logs()
-				.execute_returns(EvmDataWriter::new().write(U256::from(1000u64)).build());
+				.execute_returns(U256::from(1000u64));
 		});
 }
 
 #[test]
 fn get_balances_unknown_user() {
 	ExtBuilder::default()
-		.with_balances(vec![(Account::Alice, 1000)])
+		.with_balances(vec![(CryptoAlith.into(), 1000)])
 		.build()
 		.execute_with(|| {
 			assert_ok!(ForeignAssets::force_create(
-				Origin::root(),
+				RuntimeOrigin::root(),
 				0u128,
-				Account::Alice.into(),
+				CryptoAlith.into(),
 				true,
 				1
 			));
 
 			precompiles()
 				.prepare_test(
-					Account::Alice,
-					Account::ForeignAssetId(0u128),
-					EvmDataWriter::new_with_selector(Action::BalanceOf)
-						.write(Address(Account::Bob.into()))
-						.build(),
+					CryptoAlith,
+					ForeignAssetId(0u128),
+					ForeignPCall::balance_of {
+						who: Address(Bob.into()),
+					},
 				)
 				.expect_cost(0) // TODO: Test db read/write costs
 				.expect_no_logs()
-				.execute_returns(EvmDataWriter::new().write(U256::from(0u64)).build());
+				.execute_returns(U256::from(0u64));
 		});
 }
 
 #[test]
 fn approve() {
 	ExtBuilder::default()
-		.with_balances(vec![(Account::Alice, 1000)])
+		.with_balances(vec![(CryptoAlith.into(), 1000)])
 		.build()
 		.execute_with(|| {
 			assert_ok!(ForeignAssets::force_create(
-				Origin::root(),
+				RuntimeOrigin::root(),
 				0u128,
-				Account::Alice.into(),
+				CryptoAlith.into(),
 				true,
 				1
 			));
 			assert_ok!(ForeignAssets::mint(
-				Origin::signed(Account::Alice),
+				RuntimeOrigin::signed(CryptoAlith.into()),
 				0u128,
-				Account::Alice.into(),
+				CryptoAlith.into(),
 				1000
 			));
 
 			precompiles()
 				.prepare_test(
-					Account::Alice,
-					Account::ForeignAssetId(0u128),
-					EvmDataWriter::new_with_selector(Action::Approve)
-						.write(Address(Account::Bob.into()))
-						.write(U256::from(500))
-						.build(),
+					CryptoAlith,
+					ForeignAssetId(0u128),
+					ForeignPCall::approve {
+						spender: Address(Bob.into()),
+						value: 500.into(),
+					},
 				)
-				.expect_cost(31253756u64)
+				.expect_cost(27666756)
 				.expect_log(log3(
-					Account::ForeignAssetId(0u128),
+					ForeignAssetId(0u128),
 					SELECTOR_LOG_APPROVAL,
-					Account::Alice,
-					Account::Bob,
-					EvmDataWriter::new().write(U256::from(500)).build(),
+					CryptoAlith,
+					Bob,
+					solidity::encode_event_data(U256::from(500)),
 				))
-				.execute_returns(EvmDataWriter::new().write(true).build());
+				.execute_returns(true);
 		});
 }
 
 #[test]
 fn approve_saturating() {
 	ExtBuilder::default()
-		.with_balances(vec![(Account::Alice, 1000)])
+		.with_balances(vec![(CryptoAlith.into(), 1000)])
 		.build()
 		.execute_with(|| {
 			assert_ok!(ForeignAssets::force_create(
-				Origin::root(),
+				RuntimeOrigin::root(),
 				0u128,
-				Account::Alice.into(),
+				CryptoAlith.into(),
 				true,
 				1
 			));
 			assert_ok!(ForeignAssets::mint(
-				Origin::signed(Account::Alice),
+				RuntimeOrigin::signed(CryptoAlith.into()),
 				0u128,
-				Account::Alice.into(),
+				CryptoAlith.into(),
 				1000
 			));
 
 			precompiles()
 				.prepare_test(
-					Account::Alice,
-					Account::ForeignAssetId(0u128),
-					EvmDataWriter::new_with_selector(Action::Approve)
-						.write(Address(Account::Bob.into()))
-						.write(U256::MAX)
-						.build(),
+					CryptoAlith,
+					ForeignAssetId(0u128),
+					ForeignPCall::approve {
+						spender: Address(Bob.into()),
+						value: U256::MAX,
+					},
 				)
-				.expect_cost(31253756u64)
+				.expect_cost(27666756)
 				.expect_log(log3(
-					Account::ForeignAssetId(0u128),
+					ForeignAssetId(0u128),
 					SELECTOR_LOG_APPROVAL,
-					Account::Alice,
-					Account::Bob,
-					EvmDataWriter::new().write(U256::MAX).build(),
+					CryptoAlith,
+					Bob,
+					solidity::encode_event_data(U256::MAX),
 				))
-				.execute_returns(EvmDataWriter::new().write(true).build());
+				.execute_returns(true);
 
 			precompiles()
 				.prepare_test(
-					Account::Alice,
-					Account::ForeignAssetId(0u128),
-					EvmDataWriter::new_with_selector(Action::Allowance)
-						.write(Address(Account::Alice.into()))
-						.write(Address(Account::Bob.into()))
-						.build(),
+					CryptoAlith,
+					ForeignAssetId(0u128),
+					ForeignPCall::allowance {
+						owner: Address(CryptoAlith.into()),
+						spender: Address(Bob.into()),
+					},
 				)
 				.expect_cost(0u64)
 				.expect_no_logs()
-				.execute_returns(EvmDataWriter::new().write(U256::from(u128::MAX)).build());
+				.execute_returns(U256::from(u128::MAX));
 		});
 }
 
 #[test]
 fn check_allowance_existing() {
 	ExtBuilder::default()
-		.with_balances(vec![(Account::Alice, 1000)])
+		.with_balances(vec![(CryptoAlith.into(), 1000)])
 		.build()
 		.execute_with(|| {
 			assert_ok!(ForeignAssets::force_create(
-				Origin::root(),
+				RuntimeOrigin::root(),
 				0u128,
-				Account::Alice.into(),
+				CryptoAlith.into(),
 				true,
 				1
 			));
 			assert_ok!(ForeignAssets::mint(
-				Origin::signed(Account::Alice),
+				RuntimeOrigin::signed(CryptoAlith.into()),
 				0u128,
-				Account::Alice.into(),
+				CryptoAlith.into(),
 				1000
 			));
 
 			precompiles()
 				.prepare_test(
-					Account::Alice,
-					Account::ForeignAssetId(0u128),
-					EvmDataWriter::new_with_selector(Action::Approve)
-						.write(Address(Account::Bob.into()))
-						.write(U256::from(500))
-						.build(),
+					CryptoAlith,
+					ForeignAssetId(0u128),
+					ForeignPCall::approve {
+						spender: Address(Bob.into()),
+						value: 500.into(),
+					},
 				)
 				.execute_some();
 
 			precompiles()
 				.prepare_test(
-					Account::Alice,
-					Account::ForeignAssetId(0u128),
-					EvmDataWriter::new_with_selector(Action::Allowance)
-						.write(Address(Account::Alice.into()))
-						.write(Address(Account::Bob.into()))
-						.build(),
+					CryptoAlith,
+					ForeignAssetId(0u128),
+					ForeignPCall::allowance {
+						owner: Address(CryptoAlith.into()),
+						spender: Address(Bob.into()),
+					},
 				)
 				.expect_cost(0) // TODO: Test db read/write costs
 				.expect_no_logs()
-				.execute_returns(EvmDataWriter::new().write(U256::from(500u64)).build());
+				.execute_returns(U256::from(500u64));
 		});
 }
 
 #[test]
 fn check_allowance_not_existing() {
 	ExtBuilder::default()
-		.with_balances(vec![(Account::Alice, 1000)])
+		.with_balances(vec![(CryptoAlith.into(), 1000)])
 		.build()
 		.execute_with(|| {
 			assert_ok!(ForeignAssets::force_create(
-				Origin::root(),
+				RuntimeOrigin::root(),
 				0u128,
-				Account::Alice.into(),
+				CryptoAlith.into(),
 				true,
 				1
 			));
 
 			precompiles()
 				.prepare_test(
-					Account::Alice,
-					Account::ForeignAssetId(0u128),
-					EvmDataWriter::new_with_selector(Action::Allowance)
-						.write(Address(Account::Alice.into()))
-						.write(Address(Account::Bob.into()))
-						.build(),
+					CryptoAlith,
+					ForeignAssetId(0u128),
+					ForeignPCall::allowance {
+						owner: Address(CryptoAlith.into()),
+						spender: Address(Bob.into()),
+					},
 				)
 				.expect_cost(0) // TODO: Test db read/write costs
 				.expect_no_logs()
-				.execute_returns(EvmDataWriter::new().write(U256::from(0u64)).build());
+				.execute_returns(U256::from(0u64));
 		});
 }
 
 #[test]
 fn transfer() {
 	ExtBuilder::default()
-		.with_balances(vec![(Account::Alice, 1000)])
+		.with_balances(vec![(CryptoAlith.into(), 1000)])
 		.build()
 		.execute_with(|| {
 			assert_ok!(ForeignAssets::force_create(
-				Origin::root(),
+				RuntimeOrigin::root(),
 				0u128,
-				Account::Alice.into(),
+				CryptoAlith.into(),
 				true,
 				1
 			));
 			assert_ok!(ForeignAssets::mint(
-				Origin::signed(Account::Alice),
+				RuntimeOrigin::signed(CryptoAlith.into()),
 				0u128,
-				Account::Alice.into(),
+				CryptoAlith.into(),
 				1000
 			));
 
 			precompiles()
 				.prepare_test(
-					Account::Alice,
-					Account::ForeignAssetId(0u128),
-					EvmDataWriter::new_with_selector(Action::Transfer)
-						.write(Address(Account::Bob.into()))
-						.write(U256::from(400))
-						.build(),
+					CryptoAlith,
+					ForeignAssetId(0u128),
+					ForeignPCall::transfer {
+						to: Address(Bob.into()),
+						value: 400.into(),
+					},
 				)
-				.expect_cost(44055756u64) // 1 weight => 1 gas in mock
+				.expect_cost(43534756) // 1 weight => 1 gas in mock
 				.expect_log(log3(
-					Account::ForeignAssetId(0u128),
+					ForeignAssetId(0u128),
 					SELECTOR_LOG_TRANSFER,
-					Account::Alice,
-					Account::Bob,
-					EvmDataWriter::new().write(U256::from(400)).build(),
+					CryptoAlith,
+					Bob,
+					solidity::encode_event_data(U256::from(400)),
 				))
-				.execute_returns(EvmDataWriter::new().write(true).build());
+				.execute_returns(true);
 
 			precompiles()
 				.prepare_test(
-					Account::Bob,
-					Account::ForeignAssetId(0u128),
-					EvmDataWriter::new_with_selector(Action::BalanceOf)
-						.write(Address(Account::Bob.into()))
-						.build(),
+					Bob,
+					ForeignAssetId(0u128),
+					ForeignPCall::balance_of {
+						who: Address(Bob.into()),
+					},
 				)
 				.expect_cost(0) // TODO: Test db read/write costs
 				.expect_no_logs()
-				.execute_returns(EvmDataWriter::new().write(U256::from(400)).build());
+				.execute_returns(U256::from(400));
 
 			precompiles()
 				.prepare_test(
-					Account::Alice,
-					Account::ForeignAssetId(0u128),
-					EvmDataWriter::new_with_selector(Action::BalanceOf)
-						.write(Address(Account::Alice.into()))
-						.build(),
+					CryptoAlith,
+					ForeignAssetId(0u128),
+					ForeignPCall::balance_of {
+						who: Address(CryptoAlith.into()),
+					},
 				)
 				.expect_cost(0) // TODO: Test db read/write costs
 				.expect_no_logs()
-				.execute_returns(EvmDataWriter::new().write(U256::from(600)).build());
+				.execute_returns(U256::from(600));
 		});
 }
 
 #[test]
 fn transfer_not_enough_founds() {
 	ExtBuilder::default()
-		.with_balances(vec![(Account::Alice, 1000)])
+		.with_balances(vec![(CryptoAlith.into(), 1000)])
 		.build()
 		.execute_with(|| {
 			assert_ok!(ForeignAssets::force_create(
-				Origin::root(),
+				RuntimeOrigin::root(),
 				0u128,
-				Account::Alice.into(),
+				CryptoAlith.into(),
 				true,
 				1
 			));
 			assert_ok!(ForeignAssets::mint(
-				Origin::signed(Account::Alice),
+				RuntimeOrigin::signed(CryptoAlith.into()),
 				0u128,
-				Account::Alice.into(),
+				CryptoAlith.into(),
 				1
 			));
 
 			precompiles()
 				.prepare_test(
-					Account::Alice,
-					Account::ForeignAssetId(0u128),
-					EvmDataWriter::new_with_selector(Action::Transfer)
-						.write(Address(Account::Charlie.into()))
-						.write(U256::from(50))
-						.build(),
+					CryptoAlith,
+					ForeignAssetId(0u128),
+					ForeignPCall::transfer {
+						to: Address(Charlie.into()),
+						value: 50.into(),
+					},
 				)
 				.execute_reverts(|output| {
 					from_utf8(&output)
 						.unwrap()
-						.contains("Dispatched call failed with error: DispatchErrorWithPostInfo")
+						.contains("Dispatched call failed with error: ")
 						&& from_utf8(&output).unwrap().contains("BalanceLow")
 				});
 		});
@@ -467,142 +514,143 @@ fn transfer_not_enough_founds() {
 #[test]
 fn transfer_from() {
 	ExtBuilder::default()
-		.with_balances(vec![(Account::Alice, 1000)])
+		.with_balances(vec![(CryptoAlith.into(), 1000)])
 		.build()
 		.execute_with(|| {
 			assert_ok!(ForeignAssets::force_create(
-				Origin::root(),
+				RuntimeOrigin::root(),
 				0u128,
-				Account::Alice.into(),
+				CryptoAlith.into(),
 				true,
 				1
 			));
 			assert_ok!(ForeignAssets::mint(
-				Origin::signed(Account::Alice),
+				RuntimeOrigin::signed(CryptoAlith.into()),
 				0u128,
-				Account::Alice.into(),
+				CryptoAlith.into(),
 				1000
 			));
 
 			precompiles()
 				.prepare_test(
-					Account::Alice,
-					Account::ForeignAssetId(0u128),
-					EvmDataWriter::new_with_selector(Action::Approve)
-						.write(Address(Account::Bob.into()))
-						.write(U256::from(500))
-						.build(),
+					CryptoAlith,
+					ForeignAssetId(0u128),
+					ForeignPCall::approve {
+						spender: Address(Bob.into()),
+						value: 500.into(),
+					},
+				)
+				.execute_some();
+
+			// TODO: Duplicate approve (noop)?
+			precompiles()
+				.prepare_test(
+					CryptoAlith,
+					ForeignAssetId(0u128),
+					ForeignPCall::approve {
+						spender: Address(Bob.into()),
+						value: 500.into(),
+					},
 				)
 				.execute_some();
 
 			precompiles()
 				.prepare_test(
-					Account::Alice,
-					Account::ForeignAssetId(0u128),
-					EvmDataWriter::new_with_selector(Action::Approve)
-						.write(Address(Account::Bob.into()))
-						.write(U256::from(500))
-						.build(),
+					Bob, // Bob is the one sending transferFrom!
+					ForeignAssetId(0u128),
+					ForeignPCall::transfer_from {
+						from: Address(CryptoAlith.into()),
+						to: Address(Charlie.into()),
+						value: 400.into(),
+					},
 				)
-				.execute_some();
-
-			precompiles()
-				.prepare_test(
-					Account::Bob, // Bob is the one sending transferFrom!
-					Account::ForeignAssetId(0u128),
-					EvmDataWriter::new_with_selector(Action::TransferFrom)
-						.write(Address(Account::Alice.into()))
-						.write(Address(Account::Charlie.into()))
-						.write(U256::from(400))
-						.build(),
-				)
-				.expect_cost(55282756u64) // 1 weight => 1 gas in mock
+				.expect_cost(56637756) // 1 weight => 1 gas in mock
 				.expect_log(log3(
-					Account::ForeignAssetId(0u128),
+					ForeignAssetId(0u128),
 					SELECTOR_LOG_TRANSFER,
-					Account::Alice,
-					Account::Charlie,
-					EvmDataWriter::new().write(U256::from(400)).build(),
+					CryptoAlith,
+					Charlie,
+					solidity::encode_event_data(U256::from(400)),
 				))
-				.execute_returns(EvmDataWriter::new().write(true).build());
+				.execute_returns(true);
 
 			precompiles()
 				.prepare_test(
-					Account::Alice,
-					Account::ForeignAssetId(0u128),
-					EvmDataWriter::new_with_selector(Action::BalanceOf)
-						.write(Address(Account::Alice.into()))
-						.build(),
+					CryptoAlith,
+					ForeignAssetId(0u128),
+					ForeignPCall::balance_of {
+						who: Address(CryptoAlith.into()),
+					},
 				)
 				.expect_cost(0) // TODO: Test db read/write costs
 				.expect_no_logs()
-				.execute_returns(EvmDataWriter::new().write(U256::from(600)).build());
+				.execute_returns(U256::from(600));
 
 			precompiles()
 				.prepare_test(
-					Account::Bob,
-					Account::ForeignAssetId(0u128),
-					EvmDataWriter::new_with_selector(Action::BalanceOf)
-						.write(Address(Account::Bob.into()))
-						.build(),
+					Bob,
+					ForeignAssetId(0u128),
+					ForeignPCall::balance_of {
+						who: Address(Bob.into()),
+					},
 				)
 				.expect_cost(0) // TODO: Test db read/write costs
 				.expect_no_logs()
-				.execute_returns(EvmDataWriter::new().write(U256::from(0)).build());
+				.execute_returns(U256::from(0));
 
 			precompiles()
 				.prepare_test(
-					Account::Charlie,
-					Account::ForeignAssetId(0u128),
-					EvmDataWriter::new_with_selector(Action::BalanceOf)
-						.write(Address(Account::Charlie.into()))
-						.build(),
+					Charlie,
+					ForeignAssetId(0u128),
+					ForeignPCall::balance_of {
+						who: Address(Charlie.into()),
+					},
 				)
 				.expect_cost(0) // TODO: Test db read/write costs
 				.expect_no_logs()
-				.execute_returns(EvmDataWriter::new().write(U256::from(400)).build());
+				.execute_returns(U256::from(400));
 		});
 }
 
 #[test]
 fn transfer_from_non_incremental_approval() {
 	ExtBuilder::default()
-		.with_balances(vec![(Account::Alice, 1000)])
+		.with_balances(vec![(CryptoAlith.into(), 1000)])
 		.build()
 		.execute_with(|| {
 			assert_ok!(ForeignAssets::force_create(
-				Origin::root(),
+				RuntimeOrigin::root(),
 				0u128,
-				Account::Alice.into(),
+				CryptoAlith.into(),
 				true,
 				1
 			));
 			assert_ok!(ForeignAssets::mint(
-				Origin::signed(Account::Alice),
+				RuntimeOrigin::signed(CryptoAlith.into()),
 				0u128,
-				Account::Alice.into(),
+				CryptoAlith.into(),
 				1000
 			));
 
 			// We first approve 500
 			precompiles()
 				.prepare_test(
-					Account::Alice,
-					Account::ForeignAssetId(0u128),
-					EvmDataWriter::new_with_selector(Action::Approve)
-						.write(Address(Account::Bob.into()))
-						.write(U256::from(500))
-						.build(),
+					CryptoAlith,
+					ForeignAssetId(0u128),
+					ForeignPCall::approve {
+						spender: Address(Bob.into()),
+						value: 500.into(),
+					},
 				)
-				.expect_cost(31253756u64)
+				.expect_cost(27666756)
 				.expect_log(log3(
-					Account::ForeignAssetId(0u128),
+					ForeignAssetId(0u128),
 					SELECTOR_LOG_APPROVAL,
-					Account::Alice,
-					Account::Bob,
-					EvmDataWriter::new().write(U256::from(500)).build(),
+					CryptoAlith,
+					Bob,
+					solidity::encode_event_data(U256::from(500)),
 				))
-				.execute_returns(EvmDataWriter::new().write(true).build());
+				.execute_returns(true);
 
 			// We then approve 300. Non-incremental, so this is
 			// the approved new value
@@ -610,40 +658,38 @@ fn transfer_from_non_incremental_approval() {
 			// need to clear the previous one
 			precompiles()
 				.prepare_test(
-					Account::Alice,
-					Account::ForeignAssetId(0u128),
-					EvmDataWriter::new_with_selector(Action::Approve)
-						.write(Address(Account::Bob.into()))
-						.write(U256::from(300))
-						.build(),
+					CryptoAlith,
+					ForeignAssetId(0u128),
+					ForeignPCall::approve {
+						spender: Address(Bob.into()),
+						value: 300.into(),
+					},
 				)
-				.expect_cost(62037756u64)
+				.expect_cost(56991756)
 				.expect_log(log3(
-					Account::ForeignAssetId(0u128),
+					ForeignAssetId(0u128),
 					SELECTOR_LOG_APPROVAL,
-					Account::Alice,
-					Account::Bob,
-					EvmDataWriter::new().write(U256::from(300)).build(),
+					CryptoAlith,
+					Bob,
+					solidity::encode_event_data(U256::from(300)),
 				))
-				.execute_returns(EvmDataWriter::new().write(true).build());
+				.execute_returns(true);
 
 			// This should fail, as now the new approved quantity is 300
 			precompiles()
 				.prepare_test(
-					Account::Bob, // Bob is the one sending transferFrom!
-					Account::ForeignAssetId(0u128),
-					EvmDataWriter::new_with_selector(Action::TransferFrom)
-						.write(Address(Account::Alice.into()))
-						.write(Address(Account::Bob.into()))
-						.write(U256::from(500))
-						.build(),
+					Bob, // Bob is the one sending transferFrom!
+					ForeignAssetId(0u128),
+					ForeignPCall::transfer_from {
+						from: Address(CryptoAlith.into()),
+						to: Address(Bob.into()),
+						value: 500.into(),
+					},
 				)
 				.execute_reverts(|output| {
 					output
-						== b"Dispatched call failed with error: DispatchErrorWithPostInfo { \
-					post_info: PostDispatchInfo { actual_weight: None, pays_fee: Pays::Yes }, \
-					error: Module(ModuleError { index: 2, error: [10, 0, 0, 0], \
-					message: Some(\"Unapproved\") }) }"
+						== b"Dispatched call failed with error: Module(ModuleError { index: 2, error: [10, 0, 0, 0], \
+					message: Some(\"Unapproved\") })"
 				});
 		});
 }
@@ -651,50 +697,48 @@ fn transfer_from_non_incremental_approval() {
 #[test]
 fn transfer_from_above_allowance() {
 	ExtBuilder::default()
-		.with_balances(vec![(Account::Alice, 1000)])
+		.with_balances(vec![(CryptoAlith.into(), 1000)])
 		.build()
 		.execute_with(|| {
 			assert_ok!(ForeignAssets::force_create(
-				Origin::root(),
+				RuntimeOrigin::root(),
 				0u128,
-				Account::Alice.into(),
+				CryptoAlith.into(),
 				true,
 				1
 			));
 			assert_ok!(ForeignAssets::mint(
-				Origin::signed(Account::Alice),
+				RuntimeOrigin::signed(CryptoAlith.into()),
 				0u128,
-				Account::Alice.into(),
+				CryptoAlith.into(),
 				1000
 			));
 
 			precompiles()
 				.prepare_test(
-					Account::Alice,
-					Account::ForeignAssetId(0u128),
-					EvmDataWriter::new_with_selector(Action::Approve)
-						.write(Address(Account::Bob.into()))
-						.write(U256::from(300))
-						.build(),
+					CryptoAlith,
+					ForeignAssetId(0u128),
+					ForeignPCall::approve {
+						spender: Address(Bob.into()),
+						value: 300.into(),
+					},
 				)
 				.execute_some();
 
 			precompiles()
 				.prepare_test(
-					Account::Bob, // Bob is the one sending transferFrom!
-					Account::ForeignAssetId(0u128),
-					EvmDataWriter::new_with_selector(Action::TransferFrom)
-						.write(Address(Account::Alice.into()))
-						.write(Address(Account::Bob.into()))
-						.write(U256::from(400))
-						.build(),
+					Bob, // Bob is the one sending transferFrom!
+					ForeignAssetId(0u128),
+					ForeignPCall::transfer_from {
+						from: Address(CryptoAlith.into()),
+						to: Address(Bob.into()),
+						value: 400.into(),
+					},
 				)
 				.execute_reverts(|output| {
 					output
-						== b"Dispatched call failed with error: DispatchErrorWithPostInfo { \
-					post_info: PostDispatchInfo { actual_weight: None, pays_fee: Pays::Yes }, \
-					error: Module(ModuleError { index: 2, error: [10, 0, 0, 0], \
-					message: Some(\"Unapproved\") }) }"
+						== b"Dispatched call failed with error: Module(ModuleError { index: 2, error: [10, 0, 0, 0], \
+					message: Some(\"Unapproved\") })"
 				});
 		});
 }
@@ -702,84 +746,84 @@ fn transfer_from_above_allowance() {
 #[test]
 fn transfer_from_self() {
 	ExtBuilder::default()
-		.with_balances(vec![(Account::Alice, 1000)])
+		.with_balances(vec![(CryptoAlith.into(), 1000)])
 		.build()
 		.execute_with(|| {
 			assert_ok!(ForeignAssets::force_create(
-				Origin::root(),
+				RuntimeOrigin::root(),
 				0u128,
-				Account::Alice.into(),
+				CryptoAlith.into(),
 				true,
 				1
 			));
 			assert_ok!(ForeignAssets::mint(
-				Origin::signed(Account::Alice),
+				RuntimeOrigin::signed(CryptoAlith.into()),
 				0u128,
-				Account::Alice.into(),
+				CryptoAlith.into(),
 				1000
 			));
 
 			precompiles()
 				.prepare_test(
-					Account::Alice, // Alice sending transferFrom herself, no need for allowance.
-					Account::ForeignAssetId(0u128),
-					EvmDataWriter::new_with_selector(Action::TransferFrom)
-						.write(Address(Account::Alice.into()))
-						.write(Address(Account::Bob.into()))
-						.write(U256::from(400))
-						.build(),
+					CryptoAlith, // CryptoAlith sending transferFrom herself, no need for allowance.
+					ForeignAssetId(0u128),
+					ForeignPCall::transfer_from {
+						from: Address(CryptoAlith.into()),
+						to: Address(Bob.into()),
+						value: 400.into(),
+					},
 				)
-				.expect_cost(44055756u64) // 1 weight => 1 gas in mock
+				.expect_cost(43534756) // 1 weight => 1 gas in mock
 				.expect_log(log3(
-					Account::ForeignAssetId(0u128),
+					ForeignAssetId(0u128),
 					SELECTOR_LOG_TRANSFER,
-					Account::Alice,
-					Account::Bob,
-					EvmDataWriter::new().write(U256::from(400)).build(),
+					CryptoAlith,
+					Bob,
+					solidity::encode_event_data(U256::from(400)),
 				))
-				.execute_returns(EvmDataWriter::new().write(true).build());
+				.execute_returns(true);
 
 			precompiles()
 				.prepare_test(
-					Account::Alice,
-					Account::ForeignAssetId(0u128),
-					EvmDataWriter::new_with_selector(Action::BalanceOf)
-						.write(Address(Account::Alice.into()))
-						.build(),
+					CryptoAlith,
+					ForeignAssetId(0u128),
+					ForeignPCall::balance_of {
+						who: Address(CryptoAlith.into()),
+					},
 				)
 				.expect_cost(0) // TODO: Test db read/write costs
 				.expect_no_logs()
-				.execute_returns(EvmDataWriter::new().write(U256::from(600)).build());
+				.execute_returns(U256::from(600));
 
 			precompiles()
 				.prepare_test(
-					Account::Alice,
-					Account::ForeignAssetId(0u128),
-					EvmDataWriter::new_with_selector(Action::BalanceOf)
-						.write(Address(Account::Bob.into()))
-						.build(),
+					CryptoAlith,
+					ForeignAssetId(0u128),
+					ForeignPCall::balance_of {
+						who: Address(Bob.into()),
+					},
 				)
 				.expect_cost(0) // TODO: Test db read/write costs
 				.expect_no_logs()
-				.execute_returns(EvmDataWriter::new().write(U256::from(400)).build());
+				.execute_returns(U256::from(400));
 		});
 }
 
 #[test]
 fn get_metadata() {
 	ExtBuilder::default()
-		.with_balances(vec![(Account::Alice, 1000), (Account::Bob, 2500)])
+		.with_balances(vec![(CryptoAlith.into(), 1000), (Bob.into(), 2500)])
 		.build()
 		.execute_with(|| {
 			assert_ok!(ForeignAssets::force_create(
-				Origin::root(),
+				RuntimeOrigin::root(),
 				0u128,
-				Account::Alice.into(),
+				CryptoAlith.into(),
 				true,
 				1
 			));
 			assert_ok!(ForeignAssets::force_set_metadata(
-				Origin::root(),
+				RuntimeOrigin::root(),
 				0u128,
 				b"TestToken".to_vec(),
 				b"Test".to_vec(),
@@ -788,56 +832,44 @@ fn get_metadata() {
 			));
 
 			precompiles()
-				.prepare_test(
-					Account::Alice,
-					Account::ForeignAssetId(0u128),
-					EvmDataWriter::new_with_selector(Action::Name).build(),
-				)
+				.prepare_test(CryptoAlith, ForeignAssetId(0u128), ForeignPCall::name {})
 				.expect_cost(0) // TODO: Test db read/write costs
 				.expect_no_logs()
-				.execute_returns(
-					EvmDataWriter::new()
-						.write::<Bytes>("TestToken".into())
-						.build(),
-				);
+				.execute_returns(UnboundedBytes::from("TestToken"));
+
+			precompiles()
+				.prepare_test(CryptoAlith, ForeignAssetId(0u128), ForeignPCall::symbol {})
+				.expect_cost(0) // TODO: Test db read/write costs
+				.expect_no_logs()
+				.execute_returns(UnboundedBytes::from("Test"));
 
 			precompiles()
 				.prepare_test(
-					Account::Alice,
-					Account::ForeignAssetId(0u128),
-					EvmDataWriter::new_with_selector(Action::Symbol).build(),
+					CryptoAlith,
+					ForeignAssetId(0u128),
+					ForeignPCall::decimals {},
 				)
 				.expect_cost(0) // TODO: Test db read/write costs
 				.expect_no_logs()
-				.execute_returns(EvmDataWriter::new().write::<Bytes>("Test".into()).build());
-
-			precompiles()
-				.prepare_test(
-					Account::Alice,
-					Account::ForeignAssetId(0u128),
-					EvmDataWriter::new_with_selector(Action::Decimals).build(),
-				)
-				.expect_cost(0) // TODO: Test db read/write costs
-				.expect_no_logs()
-				.execute_returns(EvmDataWriter::new().write(12u8).build());
+				.execute_returns(12u8);
 		});
 }
 
 #[test]
 fn local_functions_cannot_be_accessed_by_foreign_assets() {
 	ExtBuilder::default()
-		.with_balances(vec![(Account::Alice, 1000), (Account::Bob, 2500)])
+		.with_balances(vec![(CryptoAlith.into(), 1000), (Bob.into(), 2500)])
 		.build()
 		.execute_with(|| {
 			assert_ok!(ForeignAssets::force_create(
-				Origin::root(),
+				RuntimeOrigin::root(),
 				0u128,
-				Account::Alice.into(),
+				CryptoAlith.into(),
 				true,
 				1
 			));
 			assert_ok!(ForeignAssets::force_set_metadata(
-				Origin::root(),
+				RuntimeOrigin::root(),
 				0u128,
 				b"TestToken".to_vec(),
 				b"Test".to_vec(),
@@ -847,43 +879,43 @@ fn local_functions_cannot_be_accessed_by_foreign_assets() {
 
 			precompiles()
 				.prepare_test(
-					Account::Alice,
-					Account::ForeignAssetId(0u128),
-					EvmDataWriter::new_with_selector(Action::Mint)
-						.write(Address(Account::Bob.into()))
-						.write(U256::from(400))
-						.build(),
+					CryptoAlith,
+					ForeignAssetId(0u128),
+					ForeignPCall::mint {
+						to: Address(Bob.into()),
+						value: 400.into(),
+					},
 				)
-				.execute_reverts(|output| output == b"unknown selector");
+				.execute_reverts(|output| output == b"Unknown selector");
 
 			precompiles()
 				.prepare_test(
-					Account::Alice,
-					Account::ForeignAssetId(0u128),
-					EvmDataWriter::new_with_selector(Action::Burn)
-						.write(Address(Account::Bob.into()))
-						.write(U256::from(400))
-						.build(),
+					CryptoAlith,
+					ForeignAssetId(0u128),
+					ForeignPCall::burn {
+						from: Address(Bob.into()),
+						value: 400.into(),
+					},
 				)
-				.execute_reverts(|output| output == b"unknown selector");
+				.execute_reverts(|output| output == b"Unknown selector");
 		});
 }
 
 #[test]
 fn mint_local_assets() {
 	ExtBuilder::default()
-		.with_balances(vec![(Account::Alice, 1000), (Account::Bob, 2500)])
+		.with_balances(vec![(CryptoAlith.into(), 1000), (Bob.into(), 2500)])
 		.build()
 		.execute_with(|| {
 			assert_ok!(LocalAssets::force_create(
-				Origin::root(),
+				RuntimeOrigin::root(),
 				0u128,
-				Account::Alice.into(),
+				CryptoAlith.into(),
 				true,
 				1
 			));
 			assert_ok!(LocalAssets::force_set_metadata(
-				Origin::root(),
+				RuntimeOrigin::root(),
 				0u128,
 				b"TestToken".to_vec(),
 				b"Test".to_vec(),
@@ -893,52 +925,52 @@ fn mint_local_assets() {
 
 			precompiles()
 				.prepare_test(
-					Account::Alice,
-					Account::LocalAssetId(0u128),
-					EvmDataWriter::new_with_selector(Action::Mint)
-						.write(Address(Account::Bob.into()))
-						.write(U256::from(400))
-						.build(),
+					CryptoAlith,
+					LocalAssetId(0u128),
+					LocalPCall::mint {
+						to: Address(Bob.into()),
+						value: 400.into(),
+					},
 				)
-				.expect_cost(25994756u64) // 1 weight => 1 gas in mock
+				.expect_cost(25785756) // 1 weight => 1 gas in mock
 				.expect_log(log3(
-					Account::LocalAssetId(0u128),
+					LocalAssetId(0u128),
 					SELECTOR_LOG_TRANSFER,
-					Account::Zero,
-					Account::Bob,
-					EvmDataWriter::new().write(U256::from(400)).build(),
+					Zero,
+					Bob,
+					solidity::encode_event_data(U256::from(400)),
 				))
-				.execute_returns(EvmDataWriter::new().write(true).build());
+				.execute_returns(true);
 
 			precompiles()
 				.prepare_test(
-					Account::Bob,
-					Account::LocalAssetId(0u128),
-					EvmDataWriter::new_with_selector(Action::BalanceOf)
-						.write(Address(Account::Bob.into()))
-						.build(),
+					Bob,
+					LocalAssetId(0u128),
+					LocalPCall::balance_of {
+						who: Address(Bob.into()),
+					},
 				)
 				.expect_cost(0) // TODO: Test db read/write costs
 				.expect_no_logs()
-				.execute_returns(EvmDataWriter::new().write(U256::from(400)).build());
+				.execute_returns(U256::from(400));
 		});
 }
 
 #[test]
 fn burn_local_assets() {
 	ExtBuilder::default()
-		.with_balances(vec![(Account::Alice, 1000), (Account::Bob, 2500)])
+		.with_balances(vec![(CryptoAlith.into(), 1000), (Bob.into(), 2500)])
 		.build()
 		.execute_with(|| {
 			assert_ok!(LocalAssets::force_create(
-				Origin::root(),
+				RuntimeOrigin::root(),
 				0u128,
-				Account::Alice.into(),
+				CryptoAlith.into(),
 				true,
 				1
 			));
 			assert_ok!(LocalAssets::force_set_metadata(
-				Origin::root(),
+				RuntimeOrigin::root(),
 				0u128,
 				b"TestToken".to_vec(),
 				b"Test".to_vec(),
@@ -946,60 +978,60 @@ fn burn_local_assets() {
 				false
 			));
 			assert_ok!(LocalAssets::mint(
-				Origin::signed(Account::Alice),
+				RuntimeOrigin::signed(CryptoAlith.into()),
 				0u128,
-				Account::Alice.into(),
+				CryptoAlith.into(),
 				1000
 			));
 
 			precompiles()
 				.prepare_test(
-					Account::Alice,
-					Account::LocalAssetId(0u128),
-					EvmDataWriter::new_with_selector(Action::Burn)
-						.write(Address(Account::Alice.into()))
-						.write(U256::from(400))
-						.build(),
+					CryptoAlith,
+					LocalAssetId(0u128),
+					LocalPCall::burn {
+						from: Address(CryptoAlith.into()),
+						value: 400.into(),
+					},
 				)
-				.expect_cost(30796756u64) // 1 weight => 1 gas in mock
+				.expect_cost(31512756) // 1 weight => 1 gas in mock
 				.expect_log(log3(
-					Account::LocalAssetId(0u128),
+					LocalAssetId(0u128),
 					SELECTOR_LOG_TRANSFER,
-					Account::Alice,
-					Account::Zero,
-					EvmDataWriter::new().write(U256::from(400)).build(),
+					CryptoAlith,
+					Zero,
+					solidity::encode_event_data(U256::from(400)),
 				))
-				.execute_returns(EvmDataWriter::new().write(true).build());
+				.execute_returns(true);
 
 			precompiles()
 				.prepare_test(
-					Account::Alice,
-					Account::LocalAssetId(0u128),
-					EvmDataWriter::new_with_selector(Action::BalanceOf)
-						.write(Address(Account::Alice.into()))
-						.build(),
+					CryptoAlith,
+					LocalAssetId(0u128),
+					LocalPCall::balance_of {
+						who: Address(CryptoAlith.into()),
+					},
 				)
 				.expect_cost(0) // TODO: Test db read/write costs
 				.expect_no_logs()
-				.execute_returns(EvmDataWriter::new().write(U256::from(600)).build());
+				.execute_returns(U256::from(600));
 		});
 }
 
 #[test]
 fn freeze_local_assets() {
 	ExtBuilder::default()
-		.with_balances(vec![(Account::Alice, 1000), (Account::Bob, 2500)])
+		.with_balances(vec![(CryptoAlith.into(), 1000), (Bob.into(), 2500)])
 		.build()
 		.execute_with(|| {
 			assert_ok!(LocalAssets::force_create(
-				Origin::root(),
+				RuntimeOrigin::root(),
 				0u128,
-				Account::Alice.into(),
+				CryptoAlith.into(),
 				true,
 				1
 			));
 			assert_ok!(LocalAssets::force_set_metadata(
-				Origin::root(),
+				RuntimeOrigin::root(),
 				0u128,
 				b"TestToken".to_vec(),
 				b"Test".to_vec(),
@@ -1007,37 +1039,37 @@ fn freeze_local_assets() {
 				false
 			));
 			assert_ok!(LocalAssets::mint(
-				Origin::signed(Account::Alice),
+				RuntimeOrigin::signed(CryptoAlith.into()),
 				0u128,
-				Account::Bob.into(),
+				Bob.into(),
 				1000
 			));
 
 			precompiles()
 				.prepare_test(
-					Account::Alice,
-					Account::LocalAssetId(0u128),
-					EvmDataWriter::new_with_selector(Action::Freeze)
-						.write(Address(Account::Bob.into()))
-						.build(),
+					CryptoAlith,
+					LocalAssetId(0u128),
+					LocalPCall::freeze {
+						account: Address(Bob.into()),
+					},
 				)
-				.expect_cost(18381000u64) // 1 weight => 1 gas in mock
+				.expect_cost(17498000) // 1 weight => 1 gas in mock
 				.expect_no_logs()
-				.execute_returns(EvmDataWriter::new().write(true).build());
+				.execute_returns(true);
 
 			precompiles()
 				.prepare_test(
-					Account::Bob,
-					Account::LocalAssetId(0u128),
-					EvmDataWriter::new_with_selector(Action::Transfer)
-						.write(Address(Account::Alice.into()))
-						.write(U256::from(400))
-						.build(),
+					Bob,
+					LocalAssetId(0u128),
+					LocalPCall::transfer {
+						to: Address(CryptoAlith.into()),
+						value: 400.into(),
+					},
 				)
 				.execute_reverts(|output| {
 					from_utf8(&output)
 						.unwrap()
-						.contains("Dispatched call failed with error: DispatchErrorWithPostInfo")
+						.contains("Dispatched call failed with error: ")
 						&& from_utf8(&output).unwrap().contains("Frozen")
 				});
 		});
@@ -1046,18 +1078,18 @@ fn freeze_local_assets() {
 #[test]
 fn thaw_local_assets() {
 	ExtBuilder::default()
-		.with_balances(vec![(Account::Alice, 1000), (Account::Bob, 2500)])
+		.with_balances(vec![(CryptoAlith.into(), 1000), (Bob.into(), 2500)])
 		.build()
 		.execute_with(|| {
 			assert_ok!(LocalAssets::force_create(
-				Origin::root(),
+				RuntimeOrigin::root(),
 				0u128,
-				Account::Alice.into(),
+				CryptoAlith.into(),
 				true,
 				1
 			));
 			assert_ok!(LocalAssets::force_set_metadata(
-				Origin::root(),
+				RuntimeOrigin::root(),
 				0u128,
 				b"TestToken".to_vec(),
 				b"Test".to_vec(),
@@ -1065,72 +1097,72 @@ fn thaw_local_assets() {
 				false
 			));
 			assert_ok!(LocalAssets::mint(
-				Origin::signed(Account::Alice),
+				RuntimeOrigin::signed(CryptoAlith.into()),
 				0u128,
-				Account::Bob.into(),
+				Bob.into(),
 				1000
 			));
 
 			precompiles()
 				.prepare_test(
-					Account::Alice,
-					Account::LocalAssetId(0u128),
-					EvmDataWriter::new_with_selector(Action::Freeze)
-						.write(Address(Account::Bob.into()))
-						.build(),
+					CryptoAlith,
+					LocalAssetId(0u128),
+					LocalPCall::freeze {
+						account: Address(Bob.into()),
+					},
 				)
-				.expect_cost(18381000u64) // 1 weight => 1 gas in mock
+				.expect_cost(17498000) // 1 weight => 1 gas in mock
 				.expect_no_logs()
-				.execute_returns(EvmDataWriter::new().write(true).build());
+				.execute_returns(true);
 
 			precompiles()
 				.prepare_test(
-					Account::Alice,
-					Account::LocalAssetId(0u128),
-					EvmDataWriter::new_with_selector(Action::Thaw)
-						.write(Address(Account::Bob.into()))
-						.build(),
+					CryptoAlith,
+					LocalAssetId(0u128),
+					LocalPCall::thaw {
+						account: Address(Bob.into()),
+					},
 				)
-				.expect_cost(18215000u64) // 1 weight => 1 gas in mock
+				.expect_cost(17842000) // 1 weight => 1 gas in mock
 				.expect_no_logs()
-				.execute_returns(EvmDataWriter::new().write(true).build());
+				.execute_returns(true);
 
 			precompiles()
 				.prepare_test(
-					Account::Bob,
-					Account::LocalAssetId(0u128),
-					EvmDataWriter::new_with_selector(Action::Transfer)
-						.write(Address(Account::Alice.into()))
-						.write(U256::from(400))
-						.build(),
+					Bob,
+					LocalAssetId(0u128),
+					LocalPCall::transfer {
+						to: Address(CryptoAlith.into()),
+						value: 400.into(),
+					},
 				)
-				.expect_cost(44055756u64) // 1 weight => 1 gas in mock
+				.expect_cost(43534756) // 1 weight => 1 gas in mock
 				.expect_log(log3(
-					Account::LocalAssetId(0u128),
+					LocalAssetId(0u128),
 					SELECTOR_LOG_TRANSFER,
-					Account::Bob,
-					Account::Alice,
-					EvmDataWriter::new().write(U256::from(400)).build(),
+					Bob,
+					CryptoAlith,
+					solidity::encode_event_data(U256::from(400)),
 				))
-				.execute_returns(EvmDataWriter::new().write(true).build());
+				.execute_returns(true);
 		});
 }
 
 #[test]
 fn freeze_asset_local_asset() {
 	ExtBuilder::default()
-		.with_balances(vec![(Account::Alice, 1000), (Account::Bob, 2500)])
+		.with_balances(vec![(CryptoAlith.into(), 1000), (Bob.into(), 2500)])
 		.build()
 		.execute_with(|| {
 			assert_ok!(LocalAssets::force_create(
-				Origin::root(),
+				RuntimeOrigin::root(),
 				0u128,
-				Account::Alice.into(),
+				CryptoAlith.into(),
 				true,
 				1
 			));
 			assert_ok!(LocalAssets::force_set_metadata(
-				Origin::root(),
+				RuntimeOrigin::root(),
 				0u128,
 				b"TestToken".to_vec(),
 				b"Test".to_vec(),
@@ -1138,36 +1170,36 @@ fn freeze_asset_local_asset() {
 				false
 			));
 			assert_ok!(LocalAssets::mint(
-				Origin::signed(Account::Alice),
+				RuntimeOrigin::signed(CryptoAlith.into()),
 				0u128,
-				Account::Bob.into(),
+				Bob.into(),
 				1000
 			));
 
 			precompiles()
 				.prepare_test(
-					Account::Alice,
-					Account::LocalAssetId(0u128),
-					EvmDataWriter::new_with_selector(Action::FreezeAsset).build(),
+					CryptoAlith,
+					LocalAssetId(0u128),
+					LocalPCall::freeze_asset {},
 				)
-				.expect_cost(14885000u64) // 1 weight => 1 gas in mock
+				.expect_cost(13719000) // 1 weight => 1 gas in mock
 				.expect_no_logs()
-				.execute_returns(EvmDataWriter::new().write(true).build());
+				.execute_returns(true);
 
 			precompiles()
 				.prepare_test(
-					Account::Bob,
-					Account::LocalAssetId(0u128),
-					EvmDataWriter::new_with_selector(Action::Transfer)
-						.write(Address(Account::Alice.into()))
-						.write(U256::from(400))
-						.build(),
+					Bob,
+					LocalAssetId(0u128),
+					LocalPCall::transfer {
+						to: Address(CryptoAlith.into()),
+						value: 400.into(),
+					},
 				)
 				.execute_reverts(|output| {
 					from_utf8(&output)
 						.unwrap()
-						.contains("Dispatched call failed with error: DispatchErrorWithPostInfo")
-						&& from_utf8(&output).unwrap().contains("Frozen")
+						.contains("Dispatched call failed with error: ")
+						&& from_utf8(&output).unwrap().contains("AssetNotLive")
 				});
 		});
 }
@@ -1175,18 +1207,18 @@ fn freeze_asset_local_asset() {
 #[test]
 fn thaw_asset_local_assets() {
 	ExtBuilder::default()
-		.with_balances(vec![(Account::Alice, 1000), (Account::Bob, 2500)])
+		.with_balances(vec![(CryptoAlith.into(), 1000), (Bob.into(), 2500)])
 		.build()
 		.execute_with(|| {
 			assert_ok!(LocalAssets::force_create(
-				Origin::root(),
+				RuntimeOrigin::root(),
 				0u128,
-				Account::Alice.into(),
+				CryptoAlith.into(),
 				true,
 				1
 			));
 			assert_ok!(LocalAssets::force_set_metadata(
-				Origin::root(),
+				RuntimeOrigin::root(),
 				0u128,
 				b"TestToken".to_vec(),
 				b"Test".to_vec(),
@@ -1194,68 +1226,64 @@ fn thaw_asset_local_assets() {
 				false
 			));
 			assert_ok!(LocalAssets::mint(
-				Origin::signed(Account::Alice),
+				RuntimeOrigin::signed(CryptoAlith.into()),
 				0u128,
-				Account::Bob.into(),
+				Bob.into(),
 				1000
 			));
 
 			precompiles()
 				.prepare_test(
-					Account::Alice,
-					Account::LocalAssetId(0u128),
-					EvmDataWriter::new_with_selector(Action::FreezeAsset).build(),
+					CryptoAlith,
+					LocalAssetId(0u128),
+					LocalPCall::freeze_asset {},
 				)
-				.expect_cost(14885000u64) // 1 weight => 1 gas in mock
+				.expect_cost(13719000) // 1 weight => 1 gas in mock
 				.expect_no_logs()
-				.execute_returns(EvmDataWriter::new().write(true).build());
+				.execute_returns(true);
+
+			precompiles()
+				.prepare_test(CryptoAlith, LocalAssetId(0u128), LocalPCall::thaw_asset {})
+				.expect_cost(13764000) // 1 weight => 1 gas in mock
+				.expect_no_logs()
+				.execute_returns(true);
 
 			precompiles()
 				.prepare_test(
-					Account::Alice,
-					Account::LocalAssetId(0u128),
-					EvmDataWriter::new_with_selector(Action::ThawAsset).build(),
+					Bob,
+					LocalAssetId(0u128),
+					LocalPCall::transfer {
+						to: Address(CryptoAlith.into()),
+						value: 400.into(),
+					},
 				)
-				.expect_cost(14834000u64) // 1 weight => 1 gas in mock
-				.expect_no_logs()
-				.execute_returns(EvmDataWriter::new().write(true).build());
-
-			precompiles()
-				.prepare_test(
-					Account::Bob,
-					Account::LocalAssetId(0u128),
-					EvmDataWriter::new_with_selector(Action::Transfer)
-						.write(Address(Account::Alice.into()))
-						.write(U256::from(400))
-						.build(),
-				)
-				.expect_cost(44055756u64) // 1 weight => 1 gas in mock
+				.expect_cost(43534756) // 1 weight => 1 gas in mock
 				.expect_log(log3(
-					Account::LocalAssetId(0u128),
+					LocalAssetId(0u128),
 					SELECTOR_LOG_TRANSFER,
-					Account::Bob,
-					Account::Alice,
-					EvmDataWriter::new().write(U256::from(400)).build(),
+					Bob,
+					CryptoAlith,
+					solidity::encode_event_data(U256::from(400)),
 				))
-				.execute_returns(EvmDataWriter::new().write(true).build());
+				.execute_returns(true);
 		});
 }
 
 #[test]
 fn transfer_ownership_local_assets() {
 	ExtBuilder::default()
-		.with_balances(vec![(Account::Alice, 1000), (Account::Bob, 2500)])
+		.with_balances(vec![(CryptoAlith.into(), 1000), (Bob.into(), 2500)])
 		.build()
 		.execute_with(|| {
 			assert_ok!(LocalAssets::force_create(
-				Origin::root(),
+				RuntimeOrigin::root(),
 				0u128,
-				Account::Alice.into(),
+				CryptoAlith.into(),
 				true,
 				1
 			));
 			assert_ok!(LocalAssets::force_set_metadata(
-				Origin::root(),
+				RuntimeOrigin::root(),
 				0u128,
 				b"TestToken".to_vec(),
 				b"Test".to_vec(),
@@ -1265,61 +1293,61 @@ fn transfer_ownership_local_assets() {
 
 			precompiles()
 				.prepare_test(
-					Account::Alice,
-					Account::LocalAssetId(0u128),
-					EvmDataWriter::new_with_selector(Action::TransferOwnership)
-						.write(Address(Account::Bob.into()))
-						.build(),
+					CryptoAlith,
+					LocalAssetId(0u128),
+					LocalPCall::transfer_ownership {
+						owner: Address(Bob.into()),
+					},
 				)
-				.expect_cost(16033000u64) // 1 weight => 1 gas in mock
+				.expect_cost(15366000) // 1 weight => 1 gas in mock
 				.expect_no_logs()
-				.execute_returns(EvmDataWriter::new().write(true).build());
+				.execute_returns(true);
 
-			// Now Bob should be able to change ownership, and not Alice
+			// Now Bob should be able to change ownership, and not CryptoAlith
 			precompiles()
 				.prepare_test(
-					Account::Alice,
-					Account::LocalAssetId(0u128),
-					EvmDataWriter::new_with_selector(Action::TransferOwnership)
-						.write(Address(Account::Bob.into()))
-						.build(),
+					CryptoAlith,
+					LocalAssetId(0u128),
+					LocalPCall::transfer_ownership {
+						owner: Address(Bob.into()),
+					},
 				)
 				.execute_reverts(|output| {
 					from_utf8(&output)
 						.unwrap()
-						.contains("Dispatched call failed with error: DispatchErrorWithPostInfo")
+						.contains("Dispatched call failed with error: ")
 						&& from_utf8(&output).unwrap().contains("NoPermission")
 				});
 
 			precompiles()
 				.prepare_test(
-					Account::Bob,
-					Account::LocalAssetId(0u128),
-					EvmDataWriter::new_with_selector(Action::TransferOwnership)
-						.write(Address(Account::Alice.into()))
-						.build(),
+					Bob,
+					LocalAssetId(0u128),
+					LocalPCall::transfer_ownership {
+						owner: Address(CryptoAlith.into()),
+					},
 				)
-				.expect_cost(16033000u64) // 1 weight => 1 gas in mock
+				.expect_cost(15366000) // 1 weight => 1 gas in mock
 				.expect_no_logs()
-				.execute_returns(EvmDataWriter::new().write(true).build());
+				.execute_returns(true);
 		});
 }
 
 #[test]
 fn set_team_local_assets() {
 	ExtBuilder::default()
-		.with_balances(vec![(Account::Alice, 1000), (Account::Bob, 2500)])
+		.with_balances(vec![(CryptoAlith.into(), 1000), (Bob.into(), 2500)])
 		.build()
 		.execute_with(|| {
 			assert_ok!(LocalAssets::force_create(
-				Origin::root(),
+				RuntimeOrigin::root(),
 				0u128,
-				Account::Alice.into(),
+				CryptoAlith.into(),
 				true,
 				1
 			));
 			assert_ok!(LocalAssets::force_set_metadata(
-				Origin::root(),
+				RuntimeOrigin::root(),
 				0u128,
 				b"TestToken".to_vec(),
 				b"Test".to_vec(),
@@ -1329,83 +1357,83 @@ fn set_team_local_assets() {
 
 			precompiles()
 				.prepare_test(
-					Account::Alice,
-					Account::LocalAssetId(0u128),
-					EvmDataWriter::new_with_selector(Action::SetTeam)
-						.write(Address(Account::Bob.into()))
-						.write(Address(Account::Bob.into()))
-						.write(Address(Account::Bob.into()))
-						.build(),
+					CryptoAlith,
+					LocalAssetId(0u128),
+					LocalPCall::set_team {
+						issuer: Address(Bob.into()),
+						admin: Address(Bob.into()),
+						freezer: Address(Bob.into()),
+					},
 				)
-				.expect_cost(14344000u64) // 1 weight => 1 gas in mock
+				.expect_cost(14437000) // 1 weight => 1 gas in mock
 				.expect_no_logs()
-				.execute_returns(EvmDataWriter::new().write(true).build());
+				.execute_returns(true);
 
-			// Now Bob should be able to mint, and not Alice
+			// Now Bob should be able to mint, and not CryptoAlith
 			precompiles()
 				.prepare_test(
-					Account::Alice,
-					Account::LocalAssetId(0u128),
-					EvmDataWriter::new_with_selector(Action::Mint)
-						.write(Address(Account::Bob.into()))
-						.write(U256::from(400))
-						.build(),
+					CryptoAlith,
+					LocalAssetId(0u128),
+					LocalPCall::mint {
+						to: Address(Bob.into()),
+						value: 400.into(),
+					},
 				)
 				.execute_reverts(|output| {
 					from_utf8(&output)
 						.unwrap()
-						.contains("Dispatched call failed with error: DispatchErrorWithPostInfo")
+						.contains("Dispatched call failed with error: ")
 						&& from_utf8(&output).unwrap().contains("NoPermission")
 				});
 
 			precompiles()
 				.prepare_test(
-					Account::Bob,
-					Account::LocalAssetId(0u128),
-					EvmDataWriter::new_with_selector(Action::Mint)
-						.write(Address(Account::Bob.into()))
-						.write(U256::from(400))
-						.build(),
+					Bob,
+					LocalAssetId(0u128),
+					LocalPCall::mint {
+						to: Address(Bob.into()),
+						value: 400.into(),
+					},
 				)
-				.expect_cost(25994756u64) // 1 weight => 1 gas in mock
+				.expect_cost(25785756) // 1 weight => 1 gas in mock
 				.expect_log(log3(
-					Account::LocalAssetId(0u128),
+					LocalAssetId(0u128),
 					SELECTOR_LOG_TRANSFER,
-					Account::Zero,
-					Account::Bob,
-					EvmDataWriter::new().write(U256::from(400)).build(),
+					Zero,
+					Bob,
+					solidity::encode_event_data(U256::from(400)),
 				))
-				.execute_returns(EvmDataWriter::new().write(true).build());
+				.execute_returns(true);
 
 			precompiles()
 				.prepare_test(
-					Account::Bob,
-					Account::LocalAssetId(0u128),
-					EvmDataWriter::new_with_selector(Action::BalanceOf)
-						.write(Address(Account::Bob.into()))
-						.build(),
+					Bob,
+					LocalAssetId(0u128),
+					LocalPCall::balance_of {
+						who: Address(Bob.into()),
+					},
 				)
 				.expect_cost(0) // TODO: Test db read/write costs
 				.expect_no_logs()
-				.execute_returns(EvmDataWriter::new().write(U256::from(400)).build());
+				.execute_returns(U256::from(400));
 		});
 }
 
 #[test]
 fn set_metadata() {
 	ExtBuilder::default()
-		.with_balances(vec![(Account::Alice, 1000), (Account::Bob, 2500)])
+		.with_balances(vec![(CryptoAlith.into(), 1000), (Bob.into(), 2500)])
 		.build()
 		.execute_with(|| {
 			assert_ok!(LocalAssets::force_create(
-				Origin::root(),
+				RuntimeOrigin::root(),
 				0u128,
-				Account::Alice.into(),
+				CryptoAlith.into(),
 				true,
 				1
 			));
 			assert_ok!(LocalAssets::force_set_metadata(
-				Origin::root(),
+				RuntimeOrigin::root(),
 				0u128,
 				b"TestToken".to_vec(),
 				b"Test".to_vec(),
@@ -1415,69 +1443,53 @@ fn set_metadata() {
 
 			precompiles()
 				.prepare_test(
-					Account::Alice,
-					Account::LocalAssetId(0u128),
-					EvmDataWriter::new_with_selector(Action::SetMetadata)
-						.write::<Bytes>("TestToken".into())
-						.write::<Bytes>("Test".into())
-						.write::<u8>(12)
-						.build(),
+					CryptoAlith,
+					LocalAssetId(0u128),
+					LocalPCall::set_metadata {
+						name: "TestToken".into(),
+						symbol: "Test".into(),
+						decimals: 12,
+					},
 				)
-				.expect_cost(27805000u64) // 1 weight => 1 gas in mock
+				.expect_cost(24489304) // 1 weight => 1 gas in mock
 				.expect_no_logs()
-				.execute_returns(EvmDataWriter::new().write(true).build());
+				.execute_returns(true);
 
 			precompiles()
-				.prepare_test(
-					Account::Alice,
-					Account::LocalAssetId(0u128),
-					EvmDataWriter::new_with_selector(Action::Name).build(),
-				)
+				.prepare_test(CryptoAlith, LocalAssetId(0u128), LocalPCall::name {})
 				.expect_cost(0) // TODO: Test db read/write costs
 				.expect_no_logs()
-				.execute_returns(
-					EvmDataWriter::new()
-						.write::<Bytes>("TestToken".into())
-						.build(),
-				);
+				.execute_returns(UnboundedBytes::from("TestToken"));
 
 			precompiles()
-				.prepare_test(
-					Account::Alice,
-					Account::LocalAssetId(0u128),
-					EvmDataWriter::new_with_selector(Action::Symbol).build(),
-				)
+				.prepare_test(CryptoAlith, LocalAssetId(0u128), LocalPCall::symbol {})
 				.expect_cost(0) // TODO: Test db read/write costs
 				.expect_no_logs()
-				.execute_returns(EvmDataWriter::new().write::<Bytes>("Test".into()).build());
+				.execute_returns(UnboundedBytes::from("Test"));
 
 			precompiles()
-				.prepare_test(
-					Account::Alice,
-					Account::LocalAssetId(0u128),
-					EvmDataWriter::new_with_selector(Action::Decimals).build(),
-				)
+				.prepare_test(CryptoAlith, LocalAssetId(0u128), LocalPCall::decimals {})
 				.expect_cost(0) // TODO: Test db read/write costs
 				.expect_no_logs()
-				.execute_returns(EvmDataWriter::new().write(12u8).build());
+				.execute_returns(12u8);
 		});
 }
 
 #[test]
 fn clear_metadata() {
 	ExtBuilder::default()
-		.with_balances(vec![(Account::Alice, 1000), (Account::Bob, 2500)])
+		.with_balances(vec![(CryptoAlith.into(), 1000), (Bob.into(), 2500)])
 		.build()
 		.execute_with(|| {
 			assert_ok!(LocalAssets::force_create(
-				Origin::root(),
+				RuntimeOrigin::root(),
 				0u128,
-				Account::Alice.into(),
+				CryptoAlith.into(),
 				true,
 				1
 			));
 			assert_ok!(LocalAssets::force_set_metadata(
-				Origin::root(),
+				RuntimeOrigin::root(),
 				0u128,
 				b"TestToken".to_vec(),
 				b"Test".to_vec(),
@@ -1487,87 +1499,75 @@ fn clear_metadata() {
 
 			precompiles()
 				.prepare_test(
-					Account::Alice,
-					Account::LocalAssetId(0u128),
-					EvmDataWriter::new_with_selector(Action::SetMetadata)
-						.write::<Bytes>("TestToken".into())
-						.write::<Bytes>("Test".into())
-						.write::<u8>(12)
-						.build(),
+					CryptoAlith,
+					LocalAssetId(0u128),
+					LocalPCall::set_metadata {
+						name: "TestToken".into(),
+						symbol: "Test".into(),
+						decimals: 12,
+					},
 				)
-				.expect_cost(27805000u64) // 1 weight => 1 gas in mock
+				.expect_cost(24489304) // 1 weight => 1 gas in mock
 				.expect_no_logs()
-				.execute_returns(EvmDataWriter::new().write(true).build());
+				.execute_returns(true);
 
 			precompiles()
 				.prepare_test(
-					Account::Alice,
-					Account::LocalAssetId(0u128),
-					EvmDataWriter::new_with_selector(Action::ClearMetadata).build(),
+					CryptoAlith,
+					LocalAssetId(0u128),
+					LocalPCall::clear_metadata {},
 				)
-				.expect_cost(28466000u64) // 1 weight => 1 gas in mock
+				.expect_cost(24812000) // 1 weight => 1 gas in mock
 				.expect_no_logs()
-				.execute_returns(EvmDataWriter::new().write(true).build());
+				.execute_returns(true);
 
 			precompiles()
-				.prepare_test(
-					Account::Alice,
-					Account::LocalAssetId(0u128),
-					EvmDataWriter::new_with_selector(Action::Name).build(),
-				)
+				.prepare_test(CryptoAlith, LocalAssetId(0u128), LocalPCall::name {})
 				.expect_cost(0) // TODO: Test db read/write costs
 				.expect_no_logs()
-				.execute_returns(EvmDataWriter::new().write::<Bytes>("".into()).build());
+				.execute_returns(UnboundedBytes::from(""));
 
 			precompiles()
-				.prepare_test(
-					Account::Alice,
-					Account::LocalAssetId(0u128),
-					EvmDataWriter::new_with_selector(Action::Symbol).build(),
-				)
+				.prepare_test(CryptoAlith, LocalAssetId(0u128), LocalPCall::symbol {})
 				.expect_cost(0) // TODO: Test db read/write costs
 				.expect_no_logs()
-				.execute_returns(EvmDataWriter::new().write::<Bytes>("".into()).build());
+				.execute_returns(UnboundedBytes::from(""));
 
 			precompiles()
-				.prepare_test(
-					Account::Alice,
-					Account::LocalAssetId(0u128),
-					EvmDataWriter::new_with_selector(Action::Decimals).build(),
-				)
+				.prepare_test(CryptoAlith, LocalAssetId(0u128), LocalPCall::decimals {})
 				.expect_cost(0) // TODO: Test db read/write costs
 				.expect_no_logs()
-				.execute_returns(EvmDataWriter::new().write(0u8).build());
+				.execute_returns(0u8);
 		});
 }
 
 #[test]
 fn permit_valid() {
 	ExtBuilder::default()
-		.with_balances(vec![(Account::Alice, 1000)])
+		.with_balances(vec![(CryptoAlith.into(), 1000)])
 		.build()
 		.execute_with(|| {
 			assert_ok!(ForeignAssets::force_create(
-				Origin::root(),
+				RuntimeOrigin::root(),
 				0u128,
-				Account::Alice.into(),
+				CryptoAlith.into(),
 				true,
 				1
 			));
 			assert_ok!(ForeignAssets::mint(
-				Origin::signed(Account::Alice),
+				RuntimeOrigin::signed(CryptoAlith.into()),
 				0u128,
-				Account::Alice.into(),
+				CryptoAlith.into(),
 				1000
 			));
 
-			let owner: H160 = Account::Alice.into();
-			let spender: H160 = Account::Bob.into();
+			let owner: H160 = CryptoAlith.into();
+			let spender: H160 = Bob.into();
 			let value: U256 = 500u16.into();
 			let deadline: U256 = 0u8.into(); // todo: proper timestamp
 
 			let permit = Eip2612::<Runtime, IsLocal, pallet_assets::Instance1>::generate_permit(
-				Account::ForeignAssetId(0u128).into(),
+				ForeignAssetId(0u128).into(),
 				0u128,
 				owner,
 				spender,
@@ -1576,107 +1576,107 @@ fn permit_valid() {
 				deadline,
 			);
 
-			let secret_key = SecretKey::parse(&ALICE_SECRET_KEY).unwrap();
+			let secret_key = SecretKey::parse(&alith_secret_key()).unwrap();
 			let message = Message::parse(&permit);
 			let (rs, v) = sign(&message, &secret_key);
 
 			precompiles()
 				.prepare_test(
-					Account::Alice,
-					Account::ForeignAssetId(0u128),
-					EvmDataWriter::new_with_selector(Action::Eip2612Nonces)
-						.write(Address(Account::Alice.into()))
-						.build(),
+					CryptoAlith,
+					ForeignAssetId(0u128),
+					ForeignPCall::eip2612_nonces {
+						owner: Address(CryptoAlith.into()),
+					},
 				)
 				.expect_cost(0) // TODO: Test db read/write costs
 				.expect_no_logs()
-				.execute_returns(EvmDataWriter::new().write(U256::from(0u8)).build());
+				.execute_returns(U256::from(0u8));
 
 			precompiles()
 				.prepare_test(
-					Account::Charlie,
-					Account::ForeignAssetId(0u128),
-					EvmDataWriter::new_with_selector(Action::Eip2612Permit)
-						.write(Address(owner))
-						.write(Address(spender))
-						.write(value)
-						.write(deadline)
-						.write(v.serialize())
-						.write(H256::from(rs.r.b32()))
-						.write(H256::from(rs.s.b32()))
-						.build(),
+					Charlie,
+					ForeignAssetId(0u128),
+					ForeignPCall::eip2612_permit {
+						owner: Address(owner),
+						spender: Address(spender),
+						value,
+						deadline,
+						v: v.serialize(),
+						r: H256::from(rs.r.b32()),
+						s: H256::from(rs.s.b32()),
+					},
 				)
-				.expect_cost(31252000u64)
+				.expect_cost(27665000)
 				.expect_log(log3(
-					Account::ForeignAssetId(0u128),
+					ForeignAssetId(0u128),
 					SELECTOR_LOG_APPROVAL,
-					Account::Alice,
-					Account::Bob,
-					EvmDataWriter::new().write(U256::from(500)).build(),
+					CryptoAlith,
+					Bob,
+					solidity::encode_event_data(U256::from(500)),
 				))
-				.execute_returns(vec![]);
+				.execute_returns(());
 
 			precompiles()
 				.prepare_test(
-					Account::Alice,
-					Account::ForeignAssetId(0u128),
-					EvmDataWriter::new_with_selector(Action::Allowance)
-						.write(Address(Account::Alice.into()))
-						.write(Address(Account::Bob.into()))
-						.build(),
+					CryptoAlith,
+					ForeignAssetId(0u128),
+					ForeignPCall::allowance {
+						owner: Address(CryptoAlith.into()),
+						spender: Address(Bob.into()),
+					},
 				)
 				.expect_cost(0) // TODO: Test db read/write costs
 				.expect_no_logs()
-				.execute_returns(EvmDataWriter::new().write(U256::from(500u16)).build());
+				.execute_returns(U256::from(500u16));
 
 			precompiles()
 				.prepare_test(
-					Account::Alice,
-					Account::ForeignAssetId(0u128),
-					EvmDataWriter::new_with_selector(Action::Eip2612Nonces)
-						.write(Address(Account::Alice.into()))
-						.build(),
+					CryptoAlith,
+					ForeignAssetId(0u128),
+					ForeignPCall::eip2612_nonces {
+						owner: Address(CryptoAlith.into()),
+					},
 				)
 				.expect_cost(0) // TODO: Test db read/write costs
 				.expect_no_logs()
-				.execute_returns(EvmDataWriter::new().write(U256::from(1u8)).build());
+				.execute_returns(U256::from(1u8));
 		});
 }
 
 #[test]
 fn permit_valid_named_asset() {
 	ExtBuilder::default()
-		.with_balances(vec![(Account::Alice, 1000)])
+		.with_balances(vec![(CryptoAlith.into(), 1000)])
 		.build()
 		.execute_with(|| {
 			assert_ok!(ForeignAssets::force_create(
-				Origin::root(),
+				RuntimeOrigin::root(),
 				0u128,
-				Account::Alice.into(),
+				CryptoAlith.into(),
 				true,
 				1
 			));
 			assert_ok!(ForeignAssets::mint(
-				Origin::signed(Account::Alice),
+				RuntimeOrigin::signed(CryptoAlith.into()),
 				0u128,
-				Account::Alice.into(),
+				CryptoAlith.into(),
 				1000
 			));
 			assert_ok!(ForeignAssets::set_metadata(
-				Origin::signed(Account::Alice),
+				RuntimeOrigin::signed(CryptoAlith.into()),
 				0u128,
 				b"Test token".to_vec(),
 				b"TEST".to_vec(),
 				18
 			));
 
-			let owner: H160 = Account::Alice.into();
-			let spender: H160 = Account::Bob.into();
+			let owner: H160 = CryptoAlith.into();
+			let spender: H160 = Bob.into();
 			let value: U256 = 500u16.into();
 			let deadline: U256 = 0u8.into(); // todo: proper timestamp
 
 			let permit = Eip2612::<Runtime, IsLocal, pallet_assets::Instance1>::generate_permit(
-				Account::ForeignAssetId(0u128).into(),
+				ForeignAssetId(0u128).into(),
 				0u128,
 				owner,
 				spender,
@@ -1685,100 +1685,100 @@ fn permit_valid_named_asset() {
 				deadline,
 			);
 
-			let secret_key = SecretKey::parse(&ALICE_SECRET_KEY).unwrap();
+			let secret_key = SecretKey::parse(&alith_secret_key()).unwrap();
 			let message = Message::parse(&permit);
 			let (rs, v) = sign(&message, &secret_key);
 
 			precompiles()
 				.prepare_test(
-					Account::Alice,
-					Account::ForeignAssetId(0u128),
-					EvmDataWriter::new_with_selector(Action::Eip2612Nonces)
-						.write(Address(Account::Alice.into()))
-						.build(),
+					CryptoAlith,
+					ForeignAssetId(0u128),
+					ForeignPCall::eip2612_nonces {
+						owner: Address(CryptoAlith.into()),
+					},
 				)
 				.expect_cost(0) // TODO: Test db read/write costs
 				.expect_no_logs()
-				.execute_returns(EvmDataWriter::new().write(U256::from(0u8)).build());
+				.execute_returns(U256::from(0u8));
 
 			precompiles()
 				.prepare_test(
-					Account::Charlie,
-					Account::ForeignAssetId(0u128),
-					EvmDataWriter::new_with_selector(Action::Eip2612Permit)
-						.write(Address(owner))
-						.write(Address(spender))
-						.write(value)
-						.write(deadline)
-						.write(v.serialize())
-						.write(H256::from(rs.r.b32()))
-						.write(H256::from(rs.s.b32()))
-						.build(),
+					Charlie,
+					ForeignAssetId(0u128),
+					ForeignPCall::eip2612_permit {
+						owner: Address(owner),
+						spender: Address(spender),
+						value,
+						deadline,
+						v: v.serialize(),
+						r: H256::from(rs.r.b32()),
+						s: H256::from(rs.s.b32()),
+					},
 				)
-				.expect_cost(31252000u64)
+				.expect_cost(27665000)
 				.expect_log(log3(
-					Account::ForeignAssetId(0u128),
+					ForeignAssetId(0u128),
 					SELECTOR_LOG_APPROVAL,
-					Account::Alice,
-					Account::Bob,
-					EvmDataWriter::new().write(U256::from(500)).build(),
+					CryptoAlith,
+					Bob,
+					solidity::encode_event_data(U256::from(500)),
 				))
-				.execute_returns(vec![]);
+				.execute_returns(());
 
 			precompiles()
 				.prepare_test(
-					Account::Alice,
-					Account::ForeignAssetId(0u128),
-					EvmDataWriter::new_with_selector(Action::Allowance)
-						.write(Address(Account::Alice.into()))
-						.write(Address(Account::Bob.into()))
-						.build(),
+					CryptoAlith,
+					ForeignAssetId(0u128),
+					ForeignPCall::allowance {
+						owner: Address(CryptoAlith.into()),
+						spender: Address(Bob.into()),
+					},
 				)
 				.expect_cost(0) // TODO: Test db read/write costs
 				.expect_no_logs()
-				.execute_returns(EvmDataWriter::new().write(U256::from(500u16)).build());
+				.execute_returns(U256::from(500u16));
 
 			precompiles()
 				.prepare_test(
-					Account::Alice,
-					Account::ForeignAssetId(0u128),
-					EvmDataWriter::new_with_selector(Action::Eip2612Nonces)
-						.write(Address(Account::Alice.into()))
-						.build(),
+					CryptoAlith,
+					ForeignAssetId(0u128),
+					ForeignPCall::eip2612_nonces {
+						owner: Address(CryptoAlith.into()),
+					},
 				)
 				.expect_cost(0) // TODO: Test db read/write costs
 				.expect_no_logs()
-				.execute_returns(EvmDataWriter::new().write(U256::from(1u8)).build());
+				.execute_returns(U256::from(1u8));
 		});
 }
 
 #[test]
 fn permit_invalid_nonce() {
 	ExtBuilder::default()
-		.with_balances(vec![(Account::Alice, 1000)])
+		.with_balances(vec![(CryptoAlith.into(), 1000)])
 		.build()
 		.execute_with(|| {
 			assert_ok!(ForeignAssets::force_create(
-				Origin::root(),
+				RuntimeOrigin::root(),
 				0u128,
-				Account::Alice.into(),
+				CryptoAlith.into(),
 				true,
 				1
 			));
 			assert_ok!(ForeignAssets::mint(
-				Origin::signed(Account::Alice),
+				RuntimeOrigin::signed(CryptoAlith.into()),
 				0u128,
-				Account::Alice.into(),
+				CryptoAlith.into(),
 				1000
 			));
 
-			let owner: H160 = Account::Alice.into();
-			let spender: H160 = Account::Bob.into();
+			let owner: H160 = CryptoAlith.into();
+			let spender: H160 = Bob.into();
 			let value: U256 = 500u16.into();
 			let deadline: U256 = 0u8.into();
 
 			let permit = Eip2612::<Runtime, IsLocal, pallet_assets::Instance1>::generate_permit(
-				Account::ForeignAssetId(0u128).into(),
+				ForeignAssetId(0u128).into(),
 				0u128,
 				owner,
 				spender,
@@ -1787,174 +1787,174 @@ fn permit_invalid_nonce() {
 				deadline,
 			);
 
-			let secret_key = SecretKey::parse(&ALICE_SECRET_KEY).unwrap();
+			let secret_key = SecretKey::parse(&alith_secret_key()).unwrap();
 			let message = Message::parse(&permit);
 			let (rs, v) = sign(&message, &secret_key);
 
 			precompiles()
 				.prepare_test(
-					Account::Alice,
-					Account::ForeignAssetId(0u128),
-					EvmDataWriter::new_with_selector(Action::Eip2612Nonces)
-						.write(Address(Account::Alice.into()))
-						.build(),
+					CryptoAlith,
+					ForeignAssetId(0u128),
+					ForeignPCall::eip2612_nonces {
+						owner: Address(CryptoAlith.into()),
+					},
 				)
 				.expect_cost(0) // TODO: Test db read/write costs
 				.expect_no_logs()
-				.execute_returns(EvmDataWriter::new().write(U256::from(0u8)).build());
+				.execute_returns(U256::from(0u8));
 
 			precompiles()
 				.prepare_test(
-					Account::Charlie,
-					Account::ForeignAssetId(0u128),
-					EvmDataWriter::new_with_selector(Action::Eip2612Permit)
-						.write(Address(owner))
-						.write(Address(spender))
-						.write(value)
-						.write(deadline)
-						.write(v.serialize())
-						.write(H256::from(rs.r.b32()))
-						.write(H256::from(rs.s.b32()))
-						.build(),
+					Charlie,
+					ForeignAssetId(0u128),
+					ForeignPCall::eip2612_permit {
+						owner: Address(owner),
+						spender: Address(spender),
+						value,
+						deadline,
+						v: v.serialize(),
+						r: H256::from(rs.r.b32()),
+						s: H256::from(rs.s.b32()),
+					},
 				)
-				.execute_reverts(|output| output == b"invalid permit");
+				.execute_reverts(|output| output == b"Invalid permit");
 
 			precompiles()
 				.prepare_test(
-					Account::Alice,
-					Account::ForeignAssetId(0u128),
-					EvmDataWriter::new_with_selector(Action::Allowance)
-						.write(Address(Account::Alice.into()))
-						.write(Address(Account::Bob.into()))
-						.build(),
-				)
-				.expect_cost(0) // TODO: Test db read/write costs
-				.expect_no_logs()
-				.execute_returns(EvmDataWriter::new().write(U256::from(0u16)).build());
-
-			precompiles()
-				.prepare_test(
-					Account::Alice,
-					Account::ForeignAssetId(0u128),
-					EvmDataWriter::new_with_selector(Action::Eip2612Nonces)
-						.write(Address(Account::Alice.into()))
-						.build(),
+					CryptoAlith,
+					ForeignAssetId(0u128),
+					ForeignPCall::allowance {
+						owner: Address(CryptoAlith.into()),
+						spender: Address(Bob.into()),
+					},
 				)
 				.expect_cost(0) // TODO: Test db read/write costs
 				.expect_no_logs()
-				.execute_returns(EvmDataWriter::new().write(U256::from(0u8)).build());
+				.execute_returns(U256::from(0u16));
+
+			precompiles()
+				.prepare_test(
+					CryptoAlith,
+					ForeignAssetId(0u128),
+					ForeignPCall::eip2612_nonces {
+						owner: Address(CryptoAlith.into()),
+					},
+				)
+				.expect_cost(0) // TODO: Test db read/write costs
+				.expect_no_logs()
+				.execute_returns(U256::from(0u8));
 		});
 }
 
 #[test]
 fn permit_invalid_signature() {
 	ExtBuilder::default()
-		.with_balances(vec![(Account::Alice, 1000)])
+		.with_balances(vec![(CryptoAlith.into(), 1000)])
 		.build()
 		.execute_with(|| {
 			assert_ok!(ForeignAssets::force_create(
-				Origin::root(),
+				RuntimeOrigin::root(),
 				0u128,
-				Account::Alice.into(),
+				CryptoAlith.into(),
 				true,
 				1
 			));
 			assert_ok!(ForeignAssets::mint(
-				Origin::signed(Account::Alice),
+				RuntimeOrigin::signed(CryptoAlith.into()),
 				0u128,
-				Account::Alice.into(),
+				CryptoAlith.into(),
 				1000
 			));
 
-			let owner: H160 = Account::Alice.into();
-			let spender: H160 = Account::Bob.into();
+			let owner: H160 = CryptoAlith.into();
+			let spender: H160 = Bob.into();
 			let value: U256 = 500u16.into();
 			let deadline: U256 = 0u8.into();
 
 			precompiles()
 				.prepare_test(
-					Account::Alice,
-					Account::ForeignAssetId(0u128),
-					EvmDataWriter::new_with_selector(Action::Eip2612Nonces)
-						.write(Address(Account::Alice.into()))
-						.build(),
+					CryptoAlith,
+					ForeignAssetId(0u128),
+					ForeignPCall::eip2612_nonces {
+						owner: Address(CryptoAlith.into()),
+					},
 				)
 				.expect_cost(0) // TODO: Test db read/write costs
 				.expect_no_logs()
-				.execute_returns(EvmDataWriter::new().write(U256::from(0u8)).build());
+				.execute_returns(U256::from(0u8));
 
 			precompiles()
 				.prepare_test(
-					Account::Charlie,
-					Account::ForeignAssetId(0u128),
-					EvmDataWriter::new_with_selector(Action::Eip2612Permit)
-						.write(Address(owner))
-						.write(Address(spender))
-						.write(value)
-						.write(deadline)
-						.write(0u8)
-						.write(H256::random())
-						.write(H256::random())
-						.build(),
+					Charlie,
+					ForeignAssetId(0u128),
+					ForeignPCall::eip2612_permit {
+						owner: Address(owner),
+						spender: Address(spender),
+						value,
+						deadline,
+						v: 0,
+						r: H256::random(),
+						s: H256::random(),
+					},
 				)
-				.execute_reverts(|output| output == b"invalid permit");
+				.execute_reverts(|output| output == b"Invalid permit");
 
 			precompiles()
 				.prepare_test(
-					Account::Alice,
-					Account::ForeignAssetId(0u128),
-					EvmDataWriter::new_with_selector(Action::Allowance)
-						.write(Address(Account::Alice.into()))
-						.write(Address(Account::Bob.into()))
-						.build(),
-				)
-				.expect_cost(0) // TODO: Test db read/write costs
-				.expect_no_logs()
-				.execute_returns(EvmDataWriter::new().write(U256::from(0u16)).build());
-
-			precompiles()
-				.prepare_test(
-					Account::Alice,
-					Account::ForeignAssetId(0u128),
-					EvmDataWriter::new_with_selector(Action::Eip2612Nonces)
-						.write(Address(Account::Alice.into()))
-						.build(),
+					CryptoAlith,
+					ForeignAssetId(0u128),
+					ForeignPCall::allowance {
+						owner: Address(CryptoAlith.into()),
+						spender: Address(Bob.into()),
+					},
 				)
 				.expect_cost(0) // TODO: Test db read/write costs
 				.expect_no_logs()
-				.execute_returns(EvmDataWriter::new().write(U256::from(0u8)).build());
+				.execute_returns(U256::from(0u16));
+
+			precompiles()
+				.prepare_test(
+					CryptoAlith,
+					ForeignAssetId(0u128),
+					ForeignPCall::eip2612_nonces {
+						owner: Address(CryptoAlith.into()),
+					},
+				)
+				.expect_cost(0) // TODO: Test db read/write costs
+				.expect_no_logs()
+				.execute_returns(U256::from(0u8));
 		});
 }
 
 #[test]
 fn permit_invalid_deadline() {
 	ExtBuilder::default()
-		.with_balances(vec![(Account::Alice, 1000)])
+		.with_balances(vec![(CryptoAlith.into(), 1000)])
 		.build()
 		.execute_with(|| {
 			assert_ok!(ForeignAssets::force_create(
-				Origin::root(),
+				RuntimeOrigin::root(),
 				0u128,
-				Account::Alice.into(),
+				CryptoAlith.into(),
 				true,
 				1
 			));
 			assert_ok!(ForeignAssets::mint(
-				Origin::signed(Account::Alice),
+				RuntimeOrigin::signed(CryptoAlith.into()),
 				0u128,
-				Account::Alice.into(),
+				CryptoAlith.into(),
 				1000
 			));
 
 			pallet_timestamp::Pallet::<Runtime>::set_timestamp(10_000);
 
-			let owner: H160 = Account::Alice.into();
-			let spender: H160 = Account::Bob.into();
+			let owner: H160 = CryptoAlith.into();
+			let spender: H160 = Bob.into();
 			let value: U256 = 500u16.into();
 			let deadline: U256 = 5u8.into(); // deadline < timestamp => expired
 
 			let permit = Eip2612::<Runtime, IsLocal, pallet_assets::Instance1>::generate_permit(
-				Account::ForeignAssetId(0u128).into(),
+				ForeignAssetId(0u128).into(),
 				0u128,
 				owner,
 				spender,
@@ -1963,68 +1963,68 @@ fn permit_invalid_deadline() {
 				deadline,
 			);
 
-			let secret_key = SecretKey::parse(&ALICE_SECRET_KEY).unwrap();
+			let secret_key = SecretKey::parse(&alith_secret_key()).unwrap();
 			let message = Message::parse(&permit);
 			let (rs, v) = sign(&message, &secret_key);
 
 			precompiles()
 				.prepare_test(
-					Account::Alice,
-					Account::ForeignAssetId(0u128),
-					EvmDataWriter::new_with_selector(Action::Eip2612Nonces)
-						.write(Address(Account::Alice.into()))
-						.build(),
+					CryptoAlith,
+					ForeignAssetId(0u128),
+					ForeignPCall::eip2612_nonces {
+						owner: Address(CryptoAlith.into()),
+					},
 				)
 				.expect_cost(0) // TODO: Test db read/write costs
 				.expect_no_logs()
-				.execute_returns(EvmDataWriter::new().write(U256::from(0u8)).build());
+				.execute_returns(U256::from(0u8));
 
 			precompiles()
 				.prepare_test(
-					Account::Charlie,
-					Account::ForeignAssetId(0u128),
-					EvmDataWriter::new_with_selector(Action::Eip2612Permit)
-						.write(Address(owner))
-						.write(Address(spender))
-						.write(value)
-						.write(deadline)
-						.write(v.serialize())
-						.write(H256::from(rs.r.b32()))
-						.write(H256::from(rs.s.b32()))
-						.build(),
+					Charlie,
+					ForeignAssetId(0u128),
+					ForeignPCall::eip2612_permit {
+						owner: Address(owner),
+						spender: Address(spender),
+						value,
+						deadline,
+						v: v.serialize(),
+						r: H256::from(rs.r.b32()),
+						s: H256::from(rs.s.b32()),
+					},
 				)
-				.execute_reverts(|output| output == b"permit expired");
+				.execute_reverts(|output| output == b"Permit expired");
 
 			precompiles()
 				.prepare_test(
-					Account::Alice,
-					Account::ForeignAssetId(0u128),
-					EvmDataWriter::new_with_selector(Action::Allowance)
-						.write(Address(Account::Alice.into()))
-						.write(Address(Account::Bob.into()))
-						.build(),
-				)
-				.expect_cost(0) // TODO: Test db read/write costs
-				.expect_no_logs()
-				.execute_returns(EvmDataWriter::new().write(U256::from(0u16)).build());
-
-			precompiles()
-				.prepare_test(
-					Account::Alice,
-					Account::ForeignAssetId(0u128),
-					EvmDataWriter::new_with_selector(Action::Eip2612Nonces)
-						.write(Address(Account::Alice.into()))
-						.build(),
+					CryptoAlith,
+					ForeignAssetId(0u128),
+					ForeignPCall::allowance {
+						owner: Address(CryptoAlith.into()),
+						spender: Address(Bob.into()),
+					},
 				)
 				.expect_cost(0) // TODO: Test db read/write costs
 				.expect_no_logs()
-				.execute_returns(EvmDataWriter::new().write(U256::from(0u8)).build());
+				.execute_returns(U256::from(0u16));
+
+			precompiles()
+				.prepare_test(
+					CryptoAlith,
+					ForeignAssetId(0u128),
+					ForeignPCall::eip2612_nonces {
+						owner: Address(CryptoAlith.into()),
+					},
+				)
+				.expect_cost(0) // TODO: Test db read/write costs
+				.expect_no_logs()
+				.execute_returns(U256::from(0u8));
 		});
 }
 
 // This test checks the validity of a metamask signed message against the permit precompile
 // The code used to generate the signature is the following.
-// You will need to import ALICE_PRIV_KEY in metamask.
+// You will need to import CryptoAlith_PRIV_KEY in metamask.
 // If you put this code in the developer tools console, it will log the signature
 /*
 await window.ethereum.enable();
@@ -2145,26 +2145,26 @@ web3.currentProvider.sendAsync(
 #[test]
 fn permit_valid_with_metamask_signed_data() {
 	ExtBuilder::default()
-		.with_balances(vec![(Account::Alice, 1000)])
+		.with_balances(vec![(CryptoAlith.into(), 1000)])
 		.build()
 		.execute_with(|| {
 			// assetId 1
 			assert_ok!(ForeignAssets::force_create(
-				Origin::root(),
+				RuntimeOrigin::root(),
 				1u128,
-				Account::Alice.into(),
+				CryptoAlith.into(),
 				true,
 				1
 			));
 			assert_ok!(ForeignAssets::mint(
-				Origin::signed(Account::Alice),
+				RuntimeOrigin::signed(CryptoAlith.into()),
 				1u128,
-				Account::Alice.into(),
+				CryptoAlith.into(),
 				1000
 			));
 
-			let owner: H160 = H160::from_slice(ALICE_PUBLIC_KEY.as_slice());
-			let spender: H160 = Account::Bob.into();
+			let owner: H160 = CryptoAlith.into();
+			let spender: H160 = Bob.into();
 			let value: U256 = 1000u16.into();
 			let deadline: U256 = 1u16.into(); // todo: proper timestamp
 
@@ -2181,162 +2181,163 @@ fn permit_valid_with_metamask_signed_data() {
 
 			precompiles()
 				.prepare_test(
-					Account::Charlie,
-					Account::ForeignAssetId(1u128),
-					EvmDataWriter::new_with_selector(Action::Eip2612Permit)
-						.write(Address(owner))
-						.write(Address(spender))
-						.write(value)
-						.write(deadline)
-						.write(v_real)
-						.write(H256::from(r_real))
-						.write(H256::from(s_real))
-						.build(),
+					Charlie,
+					ForeignAssetId(1u128),
+					ForeignPCall::eip2612_permit {
+						owner: Address(owner),
+						spender: Address(spender),
+						value,
+						deadline,
+						v: v_real,
+						r: H256::from(r_real),
+						s: H256::from(s_real),
+					},
 				)
-				.expect_cost(31252000u64)
+				.expect_cost(27665000)
 				.expect_log(log3(
-					Account::ForeignAssetId(1u128),
+					ForeignAssetId(1u128),
 					SELECTOR_LOG_APPROVAL,
-					Account::Alice,
-					Account::Bob,
-					EvmDataWriter::new().write(U256::from(1000)).build(),
+					CryptoAlith,
+					Bob,
+					solidity::encode_event_data(U256::from(1000)),
 				))
-				.execute_returns(vec![]);
+				.execute_returns(());
 		});
 }
 
 #[test]
 fn transfer_amount_overflow() {
 	ExtBuilder::default()
-		.with_balances(vec![(Account::Alice, 1000)])
+		.with_balances(vec![(CryptoAlith.into(), 1000)])
 		.build()
 		.execute_with(|| {
 			assert_ok!(ForeignAssets::force_create(
-				Origin::root(),
+				RuntimeOrigin::root(),
 				0u128,
-				Account::Alice.into(),
+				CryptoAlith.into(),
 				true,
 				1
 			));
 			assert_ok!(ForeignAssets::mint(
-				Origin::signed(Account::Alice),
+				RuntimeOrigin::signed(CryptoAlith.into()),
 				0u128,
-				Account::Alice.into(),
+				CryptoAlith.into(),
 				1000
 			));
 
 			precompiles()
 				.prepare_test(
-					Account::Alice,
-					Account::ForeignAssetId(0u128),
-					EvmDataWriter::new_with_selector(Action::Transfer)
-						.write(Address(Account::Bob.into()))
-						.write(U256::from(u128::MAX) + 1)
-						.build(),
+					CryptoAlith,
+					ForeignAssetId(0u128),
+					ForeignPCall::transfer {
+						to: Address(Bob.into()),
+						value: U256::from(u128::MAX) + 1,
+					},
 				)
 				.expect_cost(1756u64) // 1 weight => 1 gas in mock
 				.expect_no_logs()
-				.execute_reverts(|e| e == b"value too big for u128");
+				.execute_reverts(|e| e == b"value: Value is too large for balance type");
 
 			precompiles()
 				.prepare_test(
-					Account::Bob,
-					Account::ForeignAssetId(0u128),
-					EvmDataWriter::new_with_selector(Action::BalanceOf)
-						.write(Address(Account::Bob.into()))
-						.build(),
+					Bob,
+					ForeignAssetId(0u128),
+					ForeignPCall::balance_of {
+						who: Address(Bob.into()),
+					},
 				)
 				.expect_cost(0) // TODO: Test db read/write costs
 				.expect_no_logs()
-				.execute_returns(EvmDataWriter::new().write(U256::from(0)).build());
+				.execute_returns(U256::from(0));
 
 			precompiles()
 				.prepare_test(
-					Account::Alice,
-					Account::ForeignAssetId(0u128),
-					EvmDataWriter::new_with_selector(Action::BalanceOf)
-						.write(Address(Account::Alice.into()))
-						.build(),
+					CryptoAlith,
+					ForeignAssetId(0u128),
+					ForeignPCall::balance_of {
+						who: Address(CryptoAlith.into()),
+					},
 				)
 				.expect_cost(0) // TODO: Test db read/write costs
 				.expect_no_logs()
-				.execute_returns(EvmDataWriter::new().write(U256::from(1000)).build());
+				.execute_returns(U256::from(1000));
 		});
 }
 
 #[test]
 fn transfer_from_overflow() {
 	ExtBuilder::default()
-		.with_balances(vec![(Account::Alice, 1000)])
+		.with_balances(vec![(CryptoAlith.into(), 1000)])
 		.build()
 		.execute_with(|| {
 			assert_ok!(ForeignAssets::force_create(
-				Origin::root(),
+				RuntimeOrigin::root(),
 				0u128,
-				Account::Alice.into(),
+				CryptoAlith.into(),
 				true,
 				1
 			));
 			assert_ok!(ForeignAssets::mint(
-				Origin::signed(Account::Alice),
+				RuntimeOrigin::signed(CryptoAlith.into()),
 				0u128,
-				Account::Alice.into(),
+				CryptoAlith.into(),
 				1000
 			));
 
 			precompiles()
 				.prepare_test(
-					Account::Alice,
-					Account::ForeignAssetId(0u128),
-					EvmDataWriter::new_with_selector(Action::Approve)
-						.write(Address(Account::Bob.into()))
-						.write(U256::from(500))
-						.build(),
+					CryptoAlith,
+					ForeignAssetId(0u128),
+					ForeignPCall::approve {
+						spender: Address(Bob.into()),
+						value: 500.into(),
+					},
+				)
+				.execute_some();
+
+			// TODO: Duplicate approve of same value (noop?)
+			precompiles()
+				.prepare_test(
+					CryptoAlith,
+					ForeignAssetId(0u128),
+					ForeignPCall::approve {
+						spender: Address(Bob.into()),
+						value: 500.into(),
+					},
 				)
 				.execute_some();
 
 			precompiles()
 				.prepare_test(
-					Account::Alice,
-					Account::ForeignAssetId(0u128),
-					EvmDataWriter::new_with_selector(Action::Approve)
-						.write(Address(Account::Bob.into()))
-						.write(U256::from(500))
-						.build(),
-				)
-				.execute_some();
-
-			precompiles()
-				.prepare_test(
-					Account::Bob, // Bob is the one sending transferFrom!
-					Account::ForeignAssetId(0u128),
-					EvmDataWriter::new_with_selector(Action::TransferFrom)
-						.write(Address(Account::Alice.into()))
-						.write(Address(Account::Charlie.into()))
-						.write(U256::from(u128::MAX) + 1)
-						.build(),
+					Bob, // Bob is the one sending transferFrom!
+					ForeignAssetId(0u128),
+					ForeignPCall::transfer_from {
+						from: Address(CryptoAlith.into()),
+						to: Address(Charlie.into()),
+						value: U256::from(u128::MAX) + 1,
+					},
 				)
 				.expect_cost(1756u64) // 1 weight => 1 gas in mock
 				.expect_no_logs()
-				.execute_reverts(|e| e == b"value too big for u128");
+				.execute_reverts(|e| e == b"value: Value is too large for balance type");
 		});
 }
 
 #[test]
 fn mint_overflow() {
 	ExtBuilder::default()
-		.with_balances(vec![(Account::Alice, 1000), (Account::Bob, 2500)])
+		.with_balances(vec![(CryptoAlith.into(), 1000), (Bob.into(), 2500)])
 		.build()
 		.execute_with(|| {
 			assert_ok!(LocalAssets::force_create(
-				Origin::root(),
+				RuntimeOrigin::root(),
 				0u128,
-				Account::Alice.into(),
+				CryptoAlith.into(),
 				true,
 				1
 			));
 			assert_ok!(LocalAssets::force_set_metadata(
-				Origin::root(),
+				RuntimeOrigin::root(),
 				0u128,
 				b"TestToken".to_vec(),
 				b"Test".to_vec(),
@@ -2346,34 +2347,34 @@ fn mint_overflow() {
 
 			precompiles()
 				.prepare_test(
-					Account::Alice,
-					Account::LocalAssetId(0u128),
-					EvmDataWriter::new_with_selector(Action::Mint)
-						.write(Address(Account::Bob.into()))
-						.write(U256::from(u128::MAX) + 1)
-						.build(),
+					CryptoAlith,
+					LocalAssetId(0u128),
+					LocalPCall::mint {
+						to: Address(Bob.into()),
+						value: U256::from(u128::MAX) + 1,
+					},
 				)
 				.expect_cost(1756u64) // 1 weight => 1 gas in mock
 				.expect_no_logs()
-				.execute_reverts(|e| e == b"value too big for u128");
+				.execute_reverts(|e| e == b"value: Value is too large for balance type");
 		});
 }
 
 #[test]
 fn burn_overflow() {
 	ExtBuilder::default()
-		.with_balances(vec![(Account::Alice, 1000), (Account::Bob, 2500)])
+		.with_balances(vec![(CryptoAlith.into(), 1000), (Bob.into(), 2500)])
 		.build()
 		.execute_with(|| {
 			assert_ok!(LocalAssets::force_create(
-				Origin::root(),
+				RuntimeOrigin::root(),
 				0u128,
-				Account::Alice.into(),
+				CryptoAlith.into(),
 				true,
 				1
 			));
 			assert_ok!(LocalAssets::force_set_metadata(
-				Origin::root(),
+				RuntimeOrigin::root(),
 				0u128,
 				b"TestToken".to_vec(),
 				b"Test".to_vec(),
@@ -2381,23 +2382,179 @@ fn burn_overflow() {
 				false
 			));
 			assert_ok!(LocalAssets::mint(
-				Origin::signed(Account::Alice),
+				RuntimeOrigin::signed(CryptoAlith.into()),
 				0u128,
-				Account::Alice.into(),
+				CryptoAlith.into(),
 				1000
 			));
 
 			precompiles()
 				.prepare_test(
-					Account::Alice,
-					Account::LocalAssetId(0u128),
-					EvmDataWriter::new_with_selector(Action::Burn)
-						.write(Address(Account::Alice.into()))
-						.write(U256::from(u128::MAX) + 1)
-						.build(),
+					CryptoAlith,
+					LocalAssetId(0u128),
+					LocalPCall::burn {
+						from: Address(CryptoAlith.into()),
+						value: U256::from(u128::MAX) + 1,
+					},
 				)
 				.expect_cost(1756u64) // 1 weight => 1 gas in mock
 				.expect_no_logs()
-				.execute_reverts(|e| e == b"value too big for u128");
+				.execute_reverts(|e| e == b"value: Value is too large for balance type");
 		});
+}
+
+#[test]
+fn get_owner() {
+	ExtBuilder::default()
+		.with_balances(vec![(CryptoAlith.into(), 1000), (Bob.into(), 2500)])
+		.build()
+		.execute_with(|| {
+			assert_ok!(LocalAssets::force_create(
+				RuntimeOrigin::root(),
+				0u128,
+				CryptoAlith.into(),
+				true,
+				1
+			));
+
+			assert_ok!(LocalAssets::transfer_ownership(
+				RuntimeOrigin::signed(CryptoAlith.into()),
+				0u128,
+				// owner
+				Bob.into(),
+			));
+
+			precompiles()
+				.prepare_test(CryptoAlith, LocalAssetId(0u128), ForeignPCall::owner {})
+				.expect_cost(0)
+				.expect_no_logs()
+				.execute_returns(Address(Bob.into()));
+		});
+}
+
+#[test]
+fn get_issuer() {
+	ExtBuilder::default()
+		.with_balances(vec![(CryptoAlith.into(), 1000), (Bob.into(), 2500)])
+		.build()
+		.execute_with(|| {
+			assert_ok!(LocalAssets::force_create(
+				RuntimeOrigin::root(),
+				0u128,
+				CryptoAlith.into(),
+				true,
+				1
+			));
+
+			assert_ok!(LocalAssets::set_team(
+				RuntimeOrigin::signed(CryptoAlith.into()),
+				0u128,
+				// Issuer
+				Bob.into(),
+				// admin
+				CryptoAlith.into(),
+				// freezer
+				CryptoAlith.into(),
+			));
+
+			precompiles()
+				.prepare_test(CryptoAlith, LocalAssetId(0u128), ForeignPCall::issuer {})
+				.expect_cost(0)
+				.expect_no_logs()
+				.execute_returns(Address(Bob.into()));
+		});
+}
+
+#[test]
+fn get_admin() {
+	ExtBuilder::default()
+		.with_balances(vec![(CryptoAlith.into(), 1000), (Bob.into(), 2500)])
+		.build()
+		.execute_with(|| {
+			assert_ok!(LocalAssets::force_create(
+				RuntimeOrigin::root(),
+				0u128,
+				CryptoAlith.into(),
+				true,
+				1
+			));
+
+			assert_ok!(LocalAssets::set_team(
+				RuntimeOrigin::signed(CryptoAlith.into()),
+				0u128,
+				// Issuer
+				CryptoAlith.into(),
+				// admin
+				Bob.into(),
+				// freezer
+				CryptoAlith.into(),
+			));
+
+			precompiles()
+				.prepare_test(CryptoAlith, LocalAssetId(0u128), ForeignPCall::admin {})
+				.expect_cost(0)
+				.expect_no_logs()
+				.execute_returns(Address(Bob.into()));
+		});
+}
+
+#[test]
+fn get_freezer() {
+	ExtBuilder::default()
+		.with_balances(vec![(CryptoAlith.into(), 1000), (Bob.into(), 2500)])
+		.build()
+		.execute_with(|| {
+			assert_ok!(LocalAssets::force_create(
+				RuntimeOrigin::root(),
+				0u128,
+				CryptoAlith.into(),
+				true,
+				1
+			));
+
+			assert_ok!(LocalAssets::set_team(
+				RuntimeOrigin::signed(CryptoAlith.into()),
+				0u128,
+				// Issuer
+				CryptoAlith.into(),
+				// admin
+				CryptoAlith.into(),
+				// freezer
+				Bob.into(),
+			));
+
+			precompiles()
+				.prepare_test(CryptoAlith, LocalAssetId(0u128), ForeignPCall::freezer {})
+				.expect_cost(0)
+				.expect_no_logs()
+				.execute_returns(Address(Bob.into()));
+		});
+}
+
+#[test]
+fn test_solidity_interface_has_all_function_selectors_documented_and_implemented() {
+	check_precompile_implements_solidity_interfaces(
+		&["ERC20.sol", "LocalAsset.sol", "Permit.sol"],
+		LocalPCall::supports_selector,
+	)
+}
+
+#[test]
+fn test_deprecated_solidity_selectors_are_supported() {
+	for deprecated_function in [
+		"freeze_asset()",
+		"thaw_asset()",
+		"transfer_ownership(address)",
+		"set_team(address,address,address)",
+		"set_metadata(string,string,uint8)",
+		"clear_metadata()",
+	] {
+		let selector = compute_selector(deprecated_function);
+		if !LocalPCall::supports_selector(selector) {
+			panic!(
+				"failed decoding selector 0x{:x} => '{}' as Action",
+				selector, deprecated_function,
+			)
+		}
+	}
 }

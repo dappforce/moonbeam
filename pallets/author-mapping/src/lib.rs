@@ -81,7 +81,7 @@ pub mod pallet {
 	#[pallet::config]
 	pub trait Config: frame_system::Config {
 		/// Overarching event type
-		type Event: From<Event<Self>> + IsType<<Self as frame_system::Config>::Event>;
+		type RuntimeEvent: From<Event<Self>> + IsType<<Self as frame_system::Config>::RuntimeEvent>;
 		/// Currency in which the security deposit will be taken.
 		type DepositCurrency: Currency<Self::AccountId> + ReservableCurrency<Self::AccountId>;
 		/// The amount that should be taken as a security deposit when registering a NimbusId.
@@ -143,6 +143,7 @@ pub mod pallet {
 		///
 		/// Users who have been (or will soon be) elected active collators in staking,
 		/// should submit this extrinsic to have their blocks accepted and earn rewards.
+		#[pallet::call_index(0)]
 		#[pallet::weight(<T as Config>::WeightInfo::add_association())]
 		pub fn add_association(origin: OriginFor<T>, nimbus_id: NimbusId) -> DispatchResult {
 			let account_id = ensure_signed(origin)?;
@@ -155,6 +156,7 @@ pub mod pallet {
 		/// This is useful for normal key rotation or for when switching from one physical collator
 		/// machine to another. No new security deposit is required.
 		/// This sets keys to new_nimbus_id.into() by default.
+		#[pallet::call_index(1)]
 		#[pallet::weight(<T as Config>::WeightInfo::update_association())]
 		pub fn update_association(
 			origin: OriginFor<T>,
@@ -175,6 +177,7 @@ pub mod pallet {
 		///
 		/// This is useful when you are no longer an author and would like to re-claim your security
 		/// deposit.
+		#[pallet::call_index(2)]
 		#[pallet::weight(<T as Config>::WeightInfo::clear_association())]
 		pub fn clear_association(origin: OriginFor<T>, nimbus_id: NimbusId) -> DispatchResult {
 			let account_id = ensure_signed(origin)?;
@@ -186,6 +189,7 @@ pub mod pallet {
 		///
 		/// This is useful when you are no longer an author and would like to re-claim your security
 		/// deposit.
+		#[pallet::call_index(3)]
 		#[pallet::weight(<T as Config>::WeightInfo::remove_keys())]
 		pub fn remove_keys(origin: OriginFor<T>) -> DispatchResult {
 			let account_id = ensure_signed(origin)?;
@@ -200,6 +204,7 @@ pub mod pallet {
 		/// This is useful for key rotation to update Nimbus and VRF keys in one call.
 		/// No new security deposit is required. Will replace `update_association` which is kept
 		/// now for backwards compatibility reasons.
+		#[pallet::call_index(4)]
 		#[pallet::weight(<T as Config>::WeightInfo::set_keys())]
 		pub fn set_keys(origin: OriginFor<T>, keys: Vec<u8>) -> DispatchResult {
 			let account_id = ensure_signed(origin)?;
@@ -365,8 +370,23 @@ pub mod pallet {
 	}
 
 	impl<T: Config> KeysLookup<NimbusId, T::Keys> for Pallet<T> {
+		#[cfg(feature = "runtime-benchmarks")]
+		type Account = T::AccountId;
 		fn lookup_keys(author: &NimbusId) -> Option<T::Keys> {
 			Self::keys_of(author)
+		}
+		/// Sets keys WITHOUT reserving deposit, for benchmarking purposes only
+		#[cfg(feature = "runtime-benchmarks")]
+		fn set_keys(id: NimbusId, account: T::AccountId, keys: T::Keys) {
+			use sp_runtime::traits::Zero;
+			MappingWithDeposit::<T>::insert(
+				id,
+				RegistrationInfo {
+					account,
+					deposit: Zero::zero(),
+					keys,
+				},
+			);
 		}
 	}
 
